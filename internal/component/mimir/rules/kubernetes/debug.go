@@ -23,22 +23,24 @@ type DebugMimirNamespace struct {
 func (c *Component) DebugInfo() interface{} {
 	var output DebugInfo
 
-	currentState := c.eventProcessor.getMimirState()
-	for namespace := range currentState {
-		if !isManagedMimirNamespace(c.args.MimirNameSpacePrefix, namespace) {
-			continue
+	if c.evenptProcessor != nil {
+		currentState := c.eventProcessor.getMimirState()
+		for namespace := range currentState {
+			if !isManagedMimirNamespace(c.args.MimirNameSpacePrefix, namespace) {
+				continue
+			}
+
+			output.MimirRuleNamespaces = append(output.MimirRuleNamespaces, DebugMimirNamespace{
+				Name:          namespace,
+				NumRuleGroups: len(currentState[namespace]),
+			})
 		}
 
-		output.MimirRuleNamespaces = append(output.MimirRuleNamespaces, DebugMimirNamespace{
-			Name:          namespace,
-			NumRuleGroups: len(currentState[namespace]),
-		})
-	}
-
-	// This should load from the informer cache, so it shouldn't fail under normal circumstances.
-	rulesByNamespace, err := c.eventProcessor.getKubernetesState()
-	if err != nil {
-		return DebugInfo{Error: fmt.Sprintf("failed to list rules: %v", err)}
+		// This should load from the informer cache, so it shouldn't fail under normal circumstances.
+		rulesByNamespace, err := c.eventProcessor.getKubernetesState()
+		if err != nil {
+			return DebugInfo{Error: fmt.Sprintf("failed to list rules: %v", err)}
+		}
 	}
 
 	for namespace, rules := range rulesByNamespace {
