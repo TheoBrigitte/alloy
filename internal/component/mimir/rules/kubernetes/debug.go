@@ -23,17 +23,14 @@ type DebugMimirNamespace struct {
 func (c *Component) DebugInfo() interface{} {
 	var output DebugInfo
 
-	if c.evenptProcessor != nil {
-		currentState := c.eventProcessor.getMimirState()
-		for namespace := range currentState {
-			if !isManagedMimirNamespace(c.args.MimirNameSpacePrefix, namespace) {
-				continue
-			}
+	if c.eventProcessor == nil {
+		return output
+	}
 
-			output.MimirRuleNamespaces = append(output.MimirRuleNamespaces, DebugMimirNamespace{
-				Name:          namespace,
-				NumRuleGroups: len(currentState[namespace]),
-			})
+	currentState := c.eventProcessor.getMimirState()
+	for namespace := range currentState {
+		if !isManagedMimirNamespace(c.args.MimirNameSpacePrefix, namespace) {
+			continue
 		}
 
 		// This should load from the informer cache, so it shouldn't fail under normal circumstances.
