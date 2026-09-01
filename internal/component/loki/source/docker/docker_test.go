@@ -1,36 +1,25 @@
-//go:build !race
-
 package docker
 
 import (
-	"context"
-	"io"
-	"os"
-	"strings"
+	"net/url"
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
-	"github.com/go-kit/log"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/stretchr/testify/require"
+
 	"github.com/grafana/alloy/internal/component"
-	"github.com/grafana/alloy/internal/component/common/loki/client/fake"
-	"github.com/grafana/alloy/internal/component/common/loki/positions"
-	dt "github.com/grafana/alloy/internal/component/loki/source/docker/internal/dockertarget"
+	types "github.com/grafana/alloy/internal/component/common/config"
+	alloy_relabel "github.com/grafana/alloy/internal/component/common/relabel"
+	"github.com/grafana/alloy/internal/component/discovery"
 	"github.com/grafana/alloy/internal/runtime/componenttest"
+	"github.com/grafana/alloy/internal/runtime/logging"
 	"github.com/grafana/alloy/internal/util"
 	"github.com/grafana/alloy/syntax"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/common/model"
-	"github.com/prometheus/prometheus/model/relabel"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/grafana/alloy/syntax/alloytypes"
 )
 
-const targetRestartInterval = 20 * time.Millisecond
-
-func Test(t *testing.T) {
+func TestComponent(t *testing.T) {
 	// Use host that works on all platforms (including Windows).
 	var cfg = `
 		host       = "tcp://127.0.0.1:9375"
@@ -53,7 +42,7 @@ func Test(t *testing.T) {
 	require.NoError(t, ctrl.WaitRunning(time.Minute))
 }
 
-func TestDuplicateTargets(t *testing.T) {
+func TestComponentDuplicateTargets(t *testing.T) {
 	// Use host that works on all platforms (including Windows).
 	var cfg = `
 		host       = "tcp://127.0.0.1:9376"
@@ -80,14 +69,17 @@ func TestDuplicateTargets(t *testing.T) {
 
 	cmp, err := New(component.Options{
 		ID:         "loki.source.docker.test",
-		Logger:     util.TestAlloyLogger(t),
+		Logger:     logging.NewSlogNop(),
 		Registerer: prometheus.NewRegistry(),
 		DataPath:   t.TempDir(),
 	}, args)
 	require.NoError(t, err)
 
-	require.Len(t, cmp.manager.tasks, 1)
-	require.Equal(t, cmp.manager.tasks[0].target.LabelsStr(), "{__meta_docker_container_id=\"foo\", __meta_docker_port_private=\"8080\"}")
+	require.Equal(t, 1, cmp.scheduler.Len())
+	for s := range cmp.scheduler.Sources() {
+		ss := s.(*tailer)
+		require.Equal(t, "{__meta_docker_container_id=\"foo\", __meta_docker_port_private=\"8080\"}", ss.labelsStr)
+	}
 
 	var newCfg = `
 		host       = "tcp://127.0.0.1:9376"
@@ -100,113 +92,155 @@ func TestDuplicateTargets(t *testing.T) {
 	err = syntax.Unmarshal([]byte(newCfg), &args)
 	require.NoError(t, err)
 	cmp.Update(args)
-	require.Len(t, cmp.manager.tasks, 1)
 	// Although the order of the targets changed, the filtered target stays the same.
-	require.Equal(t, cmp.manager.tasks[0].target.LabelsStr(), "{__meta_docker_container_id=\"foo\", __meta_docker_port_private=\"8080\"}")
-}
-
-func TestRestart(t *testing.T) {
-	runningState := true
-	client := clientMock{
-		logLine: "2024-05-02T13:11:55.879889Z caller=module_service.go:114 msg=\"module stopped\" module=distributor",
-		running: func() bool { return runningState },
+	require.Equal(t, 1, cmp.scheduler.Len())
+	for s := range cmp.scheduler.Sources() {
+		ss := s.(*tailer)
+		require.Equal(t, "{__meta_docker_container_id=\"foo\", __meta_docker_port_private=\"8080\"}", ss.labelsStr)
 	}
-	expectedLogLine := "caller=module_service.go:114 msg=\"module stopped\" module=distributor"
-
-	tailer, entryHandler := setupTailer(t, client)
-	go tailer.Run(t.Context())
-
-	// The container is already running, expect log lines.
-	assert.EventuallyWithT(t, func(c *assert.CollectT) {
-		logLines := entryHandler.Received()
-		if assert.NotEmpty(c, logLines) {
-			assert.Equal(c, expectedLogLine, logLines[0].Line)
-		}
-	}, time.Second, 20*time.Millisecond, "Expected log lines were not found within the time limit.")
-
-	// Stops the container.
-	runningState = false
-	time.Sleep(targetRestartInterval + 10*time.Millisecond) // Sleep for a duration greater than targetRestartInterval to make sure it stops sending log lines.
-	entryHandler.Clear()
-	time.Sleep(targetRestartInterval + 10*time.Millisecond)
-	assert.Empty(t, entryHandler.Received()) // No log lines because the container was not running.
-
-	// Restart the container and expect log lines.
-	runningState = true
-	assert.EventuallyWithT(t, func(c *assert.CollectT) {
-		logLines := entryHandler.Received()
-		if assert.NotEmpty(c, logLines) {
-			assert.Equal(c, expectedLogLine, logLines[0].Line)
-		}
-	}, time.Second, 20*time.Millisecond, "Expected log lines were not found within the time limit after restart.")
 }
 
-func TestTargetNeverStarted(t *testing.T) {
-	runningState := false
-	client := clientMock{
-		logLine: "2024-05-02T13:11:55.879889Z caller=module_service.go:114 msg=\"module stopped\" module=distributor",
-		running: func() bool { return runningState },
-	}
-
-	tailer, _ := setupTailer(t, client)
-	ctx, cancel := context.WithCancel(t.Context())
-	go tailer.Run(ctx)
-
-	time.Sleep(20 * time.Millisecond)
-
-	require.NotPanics(t, func() { cancel() })
-}
-
-func setupTailer(t *testing.T, client clientMock) (tailer *tailer, entryHandler *fake.Client) {
-	w := log.NewSyncWriter(os.Stderr)
-	logger := log.NewLogfmtLogger(w)
-	entryHandler = fake.NewClient(func() {})
-
-	ps, err := positions.New(logger, positions.Config{
-		SyncPeriod:    10 * time.Second,
-		PositionsFile: t.TempDir() + "/positions.yml",
-	})
-	require.NoError(t, err)
-
-	tgt, err := dt.NewTarget(
-		dt.NewMetrics(prometheus.NewRegistry()),
-		logger,
-		entryHandler,
-		ps,
-		"flog",
-		model.LabelSet{"job": "docker"},
-		[]*relabel.Config{},
-		client,
-	)
-	require.NoError(t, err)
-	tailerTask := &tailerTask{
-		options: &options{
-			client:                client,
-			targetRestartInterval: targetRestartInterval,
+func TestRequiresReset(t *testing.T) {
+	tests := []struct {
+		desc     string
+		a, b     Arguments
+		expected bool
+	}{
+		{
+			desc:     "both zero",
+			a:        Arguments{},
+			b:        Arguments{},
+			expected: false,
 		},
-		target: tgt,
-	}
-	return newTailer(logger, tailerTask), entryHandler
-}
-
-type clientMock struct {
-	client.APIClient
-	logLine string
-	running func() bool
-}
-
-func (mock clientMock) ContainerInspect(ctx context.Context, c string) (types.ContainerJSON, error) {
-	return types.ContainerJSON{
-		ContainerJSONBase: &types.ContainerJSONBase{
-			ID: c,
-			State: &types.ContainerState{
-				Running: mock.running(),
+		{
+			desc:     "two defaults",
+			a:        GetDefaultArguments(),
+			b:        GetDefaultArguments(),
+			expected: false,
+		},
+		{
+			desc: "all fields set and identical",
+			a: Arguments{
+				Host:             "tcp://127.0.0.1:9375",
+				RelabelRules:     alloy_relabel.Rules{{Action: alloy_relabel.Drop, TargetLabel: "foo", Regex: mustNewRegexp(t, "f(.*)")}},
+				HTTPClientConfig: &types.HTTPClientConfig{BasicAuth: &types.BasicAuth{Username: "user", Password: "password"}},
+				RefreshInterval:  time.Minute,
 			},
+			b: Arguments{
+				Host:             "tcp://127.0.0.1:9375",
+				RelabelRules:     alloy_relabel.Rules{{Action: alloy_relabel.Drop, TargetLabel: "foo", Regex: mustNewRegexp(t, "f(.*)")}},
+				HTTPClientConfig: &types.HTTPClientConfig{BasicAuth: &types.BasicAuth{Username: "user", Password: "password"}},
+				RefreshInterval:  time.Minute,
+			},
+			expected: false,
 		},
-		Config: &container.Config{Tty: true},
-	}, nil
+		{
+			desc:     "different relabel rule",
+			a:        Arguments{RelabelRules: alloy_relabel.Rules{{Action: alloy_relabel.Drop, Regex: mustNewRegexp(t, "f(.*)")}}},
+			b:        Arguments{RelabelRules: alloy_relabel.Rules{{Action: alloy_relabel.Drop, Regex: mustNewRegexp(t, ".*")}}},
+			expected: true,
+		},
+		{
+			desc:     "different host",
+			a:        Arguments{Host: "tcp://127.0.0.1:9375"},
+			b:        Arguments{Host: "tcp://127.0.0.1:9376"},
+			expected: true,
+		},
+		{
+			desc:     "different refresh interval",
+			a:        Arguments{RefreshInterval: time.Minute},
+			b:        Arguments{RefreshInterval: 2 * time.Minute},
+			expected: true,
+		},
+		{
+			desc:     "different targets",
+			a:        Arguments{Targets: []discovery.Target{discovery.NewTargetFromMap(map[string]string{"__meta_docker_container_id": "foo"})}},
+			b:        Arguments{Targets: []discovery.Target{discovery.NewTargetFromMap(map[string]string{"__meta_docker_container_id": "bar"})}},
+			expected: false,
+		},
+		{
+			desc:     "different labels",
+			a:        Arguments{Labels: map[string]string{"env": "dev"}},
+			b:        Arguments{Labels: map[string]string{"env": "prod"}},
+			expected: false,
+		},
+
+		{
+			desc:     "unset and default http client config",
+			a:        Arguments{HTTPClientConfig: nil},
+			b:        Arguments{HTTPClientConfig: types.CloneDefaultHTTPClientConfig()},
+			expected: true,
+		},
+		{
+			desc:     "different bearer token",
+			a:        Arguments{HTTPClientConfig: &types.HTTPClientConfig{BearerToken: "token"}},
+			b:        Arguments{HTTPClientConfig: &types.HTTPClientConfig{BearerToken: "other-token"}},
+			expected: true,
+		},
+		{
+			desc:     "unset and set basic auth",
+			a:        Arguments{HTTPClientConfig: &types.HTTPClientConfig{}},
+			b:        Arguments{HTTPClientConfig: &types.HTTPClientConfig{BasicAuth: &types.BasicAuth{Username: "user"}}},
+			expected: true,
+		},
+		{
+			desc:     "reordered oauth2 scopes",
+			a:        Arguments{HTTPClientConfig: &types.HTTPClientConfig{OAuth2: &types.OAuth2Config{Scopes: []string{"scope1", "scope2"}}}},
+			b:        Arguments{HTTPClientConfig: &types.HTTPClientConfig{OAuth2: &types.OAuth2Config{Scopes: []string{"scope2", "scope1"}}}},
+			expected: true,
+		},
+		{
+			desc:     "different oauth2 endpoint params",
+			a:        Arguments{HTTPClientConfig: &types.HTTPClientConfig{OAuth2: &types.OAuth2Config{EndpointParams: map[string]string{"param1": "value1"}}}},
+			b:        Arguments{HTTPClientConfig: &types.HTTPClientConfig{OAuth2: &types.OAuth2Config{EndpointParams: map[string]string{"param1": "value2"}}}},
+			expected: true,
+		},
+		{
+			desc:     "different tls config",
+			a:        Arguments{HTTPClientConfig: &types.HTTPClientConfig{TLSConfig: types.TLSConfig{CAFile: "/path/to/file.ca"}}},
+			b:        Arguments{HTTPClientConfig: &types.HTTPClientConfig{TLSConfig: types.TLSConfig{CAFile: "/other/path/to/file.ca"}}},
+			expected: true,
+		},
+		{
+			desc:     "same proxy url",
+			a:        Arguments{HTTPClientConfig: &types.HTTPClientConfig{ProxyConfig: &types.ProxyConfig{ProxyURL: mustParseURL(t, "http://0.0.0.0:11111")}}},
+			b:        Arguments{HTTPClientConfig: &types.HTTPClientConfig{ProxyConfig: &types.ProxyConfig{ProxyURL: mustParseURL(t, "http://0.0.0.0:11111")}}},
+			expected: false,
+		},
+		{
+			desc:     "different proxy url",
+			a:        Arguments{HTTPClientConfig: &types.HTTPClientConfig{ProxyConfig: &types.ProxyConfig{ProxyURL: mustParseURL(t, "http://0.0.0.0:11111")}}},
+			b:        Arguments{HTTPClientConfig: &types.HTTPClientConfig{ProxyConfig: &types.ProxyConfig{ProxyURL: mustParseURL(t, "http://0.0.0.0:22222")}}},
+			expected: true,
+		},
+		{
+			desc:     "different http header value",
+			a:        Arguments{HTTPClientConfig: &types.HTTPClientConfig{HTTPHeaders: &types.Headers{Headers: map[string][]alloytypes.Secret{"X-Test": {"value"}}}}},
+			b:        Arguments{HTTPClientConfig: &types.HTTPClientConfig{HTTPHeaders: &types.Headers{Headers: map[string][]alloytypes.Secret{"X-Test": {"other-value"}}}}},
+			expected: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.desc, func(t *testing.T) {
+			require.Equal(t, tc.expected, requiresReset(tc.a, tc.b))
+			require.Equal(t, tc.expected, requiresReset(tc.b, tc.a))
+		})
+	}
 }
 
-func (mock clientMock) ContainerLogs(ctx context.Context, container string, options container.LogsOptions) (io.ReadCloser, error) {
-	return io.NopCloser(strings.NewReader(mock.logLine)), nil
+func mustParseURL(t *testing.T, s string) types.URL {
+	t.Helper()
+
+	u, err := url.Parse(s)
+	require.NoError(t, err)
+	return types.URL{URL: u}
+}
+
+func mustNewRegexp(t *testing.T, s string) alloy_relabel.Regexp {
+	t.Helper()
+
+	var re alloy_relabel.Regexp
+	require.NoError(t, re.UnmarshalText([]byte(s)))
+	return re
 }

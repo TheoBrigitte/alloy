@@ -5,6 +5,8 @@ aliases:
 description: Learn about discovery.scaleway
 labels:
   stage: general-availability
+  products:
+    - oss
 title: discovery.scaleway
 ---
 
@@ -40,7 +42,7 @@ You can use the following arguments with `discovery.scaleway`:
 | `api_url`                | `string`            | Scaleway API URL.                                                                                | `"https://api.scaleway.com"` | no          |
 | `enable_http2`           | `bool`              | Whether HTTP2 is supported for requests.                                                         | `true`                       | no          |
 | `follow_redirects`       | `bool`              | Whether redirects returned by the server should be followed.                                     | `true`                       | no          |
-| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |                      | no       |
+| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |                              | no          |
 | `name_filter`            | `string`            | Name filter to apply against the listing request.                                                |                              | no          |
 | `no_proxy`               | `string`            | Comma-separated list of IP addresses, CIDR notations, and domain names to exclude from proxying. |                              | no          |
 | `port`                   | `number`            | Default port on servers to associate with generated targets.                                     | `80`                         | no          |
@@ -66,11 +68,15 @@ The `name_filter` and `tags_filter` arguments can be used to filter the set of d
 
 You can use the following blocks with `discovery.scaleway`:
 
+{{< docs/alloy-config >}}
+
 | Block                      | Description                                            | Required |
 | -------------------------- | ------------------------------------------------------ | -------- |
 | [`tls_config`][tls_config] | Configure TLS settings for connecting to the endpoint. | no       |
 
 [tls_config]: #tls_config
+
+{{< /docs/alloy-config >}}
 
 ### `tls_config`
 

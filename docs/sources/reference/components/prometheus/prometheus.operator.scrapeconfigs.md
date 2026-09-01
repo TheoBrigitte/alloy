@@ -5,6 +5,8 @@ aliases:
 description: Learn about prometheus.operator.scrapeconfigs
 labels:
   stage: experimental
+  products:
+    - oss
 title: prometheus.operator.scrapeconfigs
 ---
 
@@ -24,6 +26,48 @@ You can run {{< param "PRODUCT_NAME" >}} from outside the cluster by supplying c
 `scrapeconfigs` may reference secrets for authenticating to targets to scrape them.
 In these cases, the secrets are loaded and refreshed only when the ScrapeConfig is updated or when this component refreshes its internal state, which happens on a 5-minute refresh cycle.
 
+## Service Discovery Methods
+
+ScrapeConfig resources support multiple service discovery mechanisms:
+
+### Static Configuration
+
+Static configurations define a fixed list of targets to scrape. This is useful when targets are known in advance and don't change frequently.
+
+### HTTP Service Discovery
+
+HTTP service discovery allows dynamic target discovery by querying an HTTP endpoint that returns target information in JSON format. The endpoint is polled at regular intervals to discover new targets or remove stale ones. This is particularly useful for:
+
+- Dynamic environments where targets are frequently added or removed
+- Integration with external service registries
+- Custom service discovery implementations
+
+The HTTP endpoint returns a JSON array of target groups, where each target group contains:
+
+- `targets`: Array of `host:port` combinations to scrape
+- `labels`: Optional labels to apply to all targets in the group
+
+Example JSON response:
+
+```json
+[
+  {
+    "targets": ["service1.example.com:8080", "service2.example.com:8080"],
+    "labels": {
+      "job": "web-servers",
+      "env": "production"
+    }
+  },
+  {
+    "targets": ["db1.example.com:9090"],
+    "labels": {
+      "job": "databases",
+      "env": "production"
+    }
+  }
+]
+```
+
 ## Usage
 
 ```alloy
@@ -39,12 +83,14 @@ You can use the following arguments with `prometheus.operator.scrapeconfigs`:
 | Name                    | Type                    | Description                                                                                             | Default | Required |
 | ----------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------- | ------- | -------- |
 | `forward_to`            | `list(MetricsReceiver)` | List of receivers to send scraped metrics to.                                                           |         | yes      |
-| `informer_sync_timeout` | `duration`              | Timeout for initial sync of ScrapeConfig resources.                                                     | `1m`    | no       |
+| `informer_sync_timeout` | `duration`              | Timeout for initial sync of ScrapeConfig resources.                                                     | `"1m"`  | no       |
 | `namespaces`            | `list(string)`          | List of namespaces to search for ScrapeConfig resources. If not specified, all namespaces are searched. |         | no       |
 
 ## Blocks
 
 You can use the following blocks with `prometheus.operator.scrapeconfigs`:
+
+{{< docs/alloy-config >}}
 
 | Block                                               | Description                                                                                 | Required |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------- | -------- |
@@ -60,9 +106,6 @@ You can use the following blocks with `prometheus.operator.scrapeconfigs`:
 | [`selector`][selector]                              | Label selector for which `scrapeconfigs` to discover.                                       | no       |
 | `selector` > [`match_expression`][match_expression] | Label selector expression for which `scrapeconfigs` to discover.                            | no       |
 
-The > symbol indicates deeper levels of nesting.
-For example, `client` > `basic_auth` refers to a `basic_auth` block defined inside a `client` block.
-
 [client]: #client
 [authorization]: #authorization
 [basic_auth]: #basic_auth
@@ -73,6 +116,8 @@ For example, `client` > `basic_auth` refers to a `basic_auth` block defined insi
 [rule]: #rule
 [scrape]: #scrape
 [tls_config]: #tls_config
+
+{{< /docs/alloy-config >}}
 
 ### `client`
 
@@ -96,11 +141,11 @@ The following arguments are supported:
 
  At most, one of the following can be provided:
  
-* [`authorization`][authorization] block
-* [`basic_auth`][basic_auth] block
-* [`bearer_token`][client] argument
-* [`bearer_token_file`][client] argument
-* [`oauth2`][oauth2] block
+* [`authorization`](#authorization) block
+* [`basic_auth`](#basic_auth) block
+* [`bearer_token`](#client) argument
+* [`bearer_token_file`](#client) argument
+* [`oauth2`](#oauth2) block
 
 {{< docs/shared lookup="reference/components/http-client-proxy-config-description.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
@@ -234,6 +279,74 @@ prometheus.operator.scrapeconfigs "scrapeconfigs" {
         }
     }
 }
+```
+
+### Static Configuration Example
+
+This example shows a ScrapeConfig resource using static target discovery:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: ScrapeConfig
+metadata:
+  name: static-targets
+  namespace: monitoring
+spec:
+  staticConfigs:
+  - targets:
+    - "web-server-1.example.com:8080"
+    - "web-server-2.example.com:8080"
+    labels:
+      job: "web-servers"
+      env: "production"
+  metricsPath: /metrics
+  scrapeInterval: 30s
+```
+
+### HTTP Service Discovery Example
+
+This example shows a ScrapeConfig resource using HTTP service discovery:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: ScrapeConfig
+metadata:
+  name: http-discovery
+  namespace: monitoring
+spec:
+  httpSDConfigs:
+  - url: "http://service-registry.internal:8080/discover"
+    refreshInterval: 60s
+  metricsPath: /metrics
+  scrapeInterval: 30s
+  scrapeTimeout: 10s
+```
+
+The HTTP endpoint (`http://service-registry.internal:8080/discover`) returns JSON in this format:
+
+```json
+[
+  {
+    "targets": [
+      "api-server-1.example.com:8080",
+      "api-server-2.example.com:8080"
+    ],
+    "labels": {
+      "service": "api",
+      "version": "v1.2.3"
+    }
+  },
+  {
+    "targets": [
+      "worker-1.example.com:9090",
+      "worker-2.example.com:9090"
+    ],
+    "labels": {
+      "service": "worker",
+      "version": "v2.1.0"
+    }
+  }
+]
 ```
 
 ## Extra Metric Labels

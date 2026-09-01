@@ -2,22 +2,22 @@ package labelstore
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
-	"github.com/go-kit/log"
-	"github.com/grafana/alloy/internal/featuregate"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
-	alloy_service "github.com/grafana/alloy/internal/service"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/model/value"
+
+	"github.com/grafana/alloy/internal/featuregate"
+	alloy_service "github.com/grafana/alloy/internal/service"
 )
 
 const ServiceName = "labelstore"
 
 type Service struct {
-	log                 log.Logger
+	log                 *slog.Logger
 	mut                 sync.Mutex
 	globalRefID         uint64
 	mappings            map[string]*remoteWriteMapping
@@ -35,12 +35,35 @@ type staleMarker struct {
 
 type Arguments struct{}
 
-var _ alloy_service.Service = (*Service)(nil)
+var (
+	_ alloy_service.Service = (*Service)(nil)
+	_ alloy_service.Service = (*disabledStore)(nil)
+)
 
-func New(l log.Logger, r prometheus.Registerer) *Service {
+type LabelStoreService interface {
+	alloy_service.Service
+	LabelStore
+}
+
+func New(l *slog.Logger, r prometheus.Registerer, enabled ...bool) LabelStoreService {
 	if l == nil {
-		l = log.NewNopLogger()
+		l = slog.New(slog.DiscardHandler)
 	}
+
+	e := true
+	if len(enabled) != 0 {
+		e = enabled[0]
+	}
+
+	if !e {
+		l.Info("labelstore service is disabled")
+		return disabledStore{}
+	}
+
+	return newLabelStore(l, r)
+}
+
+func newLabelStore(l *slog.Logger, r prometheus.Registerer) *Service {
 	s := &Service{
 		log:                 l,
 		globalRefID:         0,
@@ -54,6 +77,7 @@ func New(l log.Logger, r prometheus.Registerer) *Service {
 			Help: "Last time stale check was ran expressed in unix timestamp.",
 		}),
 	}
+
 	_ = r.Register(s.lastStaleCheck)
 	_ = r.Register(s)
 	return s
@@ -122,11 +146,15 @@ func (s *Service) Data() any {
 	return s
 }
 
-// GetOrAddLink is called by a remote_write endpoint component to add mapping and get back the global id.
-func (s *Service) GetOrAddLink(componentID string, localRefID uint64, lbls labels.Labels) uint64 {
+// AddLocalLink is called by a remote_write endpoint component to add mapping from local ref and global ref
+func (s *Service) AddLocalLink(componentID string, globalRefID uint64, localRefID uint64) {
 	s.mut.Lock()
 	defer s.mut.Unlock()
 
+	s.addLocalLink(componentID, globalRefID, localRefID)
+}
+
+func (s *Service) addLocalLink(componentID string, globalRefID uint64, localRefID uint64) {
 	// If the mapping doesn't exist then we need to create it
 	m, found := s.mappings[componentID]
 	if !found {
@@ -138,30 +166,38 @@ func (s *Service) GetOrAddLink(componentID string, localRefID uint64, lbls label
 		s.mappings[componentID] = m
 	}
 
-	labelHash := lbls.Hash()
-	globalID, found := s.labelsHashToGlobal[labelHash]
-	if found {
-		m.localToGlobal[localRefID] = globalID
-		m.globalToLocal[globalID] = localRefID
-		return globalID
+	m.localToGlobal[localRefID] = globalRefID
+	m.globalToLocal[globalRefID] = localRefID
+}
+
+// ReplaceLocalLink updates an existing local to global mapping for a component.
+func (s *Service) ReplaceLocalLink(componentID string, globalRefID uint64, cachedLocalRef uint64, newLocalRef uint64) {
+	s.mut.Lock()
+	defer s.mut.Unlock()
+
+	m, found := s.mappings[componentID]
+	// If we don't have a mapping yet there's nothing to replace
+	if !found {
+		s.addLocalLink(componentID, globalRefID, newLocalRef)
+		return
 	}
-	// We have a value we have never seen before so increment the globalrefid and assign
-	s.globalRefID++
-	s.labelsHashToGlobal[labelHash] = s.globalRefID
-	m.localToGlobal[localRefID] = s.globalRefID
-	m.globalToLocal[s.globalRefID] = localRefID
-	return s.globalRefID
+
+	// Delete the old mapping
+	delete(m.localToGlobal, cachedLocalRef)
+	// Add the new mapping
+	m.localToGlobal[newLocalRef] = globalRefID
+	m.globalToLocal[globalRefID] = newLocalRef
 }
 
 // GetOrAddGlobalRefID is used to create a global refid for a labelset
 func (s *Service) GetOrAddGlobalRefID(l labels.Labels) uint64 {
-	s.mut.Lock()
-	defer s.mut.Unlock()
-
 	// Guard against bad input.
-	if l == nil {
+	if l.IsEmpty() {
 		return 0
 	}
+
+	s.mut.Lock()
+	defer s.mut.Unlock()
 
 	labelHash := l.Hash()
 	globalID, found := s.labelsHashToGlobal[labelHash]
@@ -171,19 +207,6 @@ func (s *Service) GetOrAddGlobalRefID(l labels.Labels) uint64 {
 	s.globalRefID++
 	s.labelsHashToGlobal[labelHash] = s.globalRefID
 	return s.globalRefID
-}
-
-// GetGlobalRefID returns the global refid for a component local combo, or 0 if not found
-func (s *Service) GetGlobalRefID(componentID string, localRefID uint64) uint64 {
-	s.mut.Lock()
-	defer s.mut.Unlock()
-
-	m, found := s.mappings[componentID]
-	if !found {
-		return 0
-	}
-	global := m.localToGlobal[localRefID]
-	return global
 }
 
 // GetLocalRefID returns the local refid for a component global combo, or 0 if not found
@@ -238,7 +261,7 @@ func (s *Service) CheckAndRemoveStaleMarkers() {
 	defer s.mut.Unlock()
 
 	s.lastStaleCheck.Set(float64(time.Now().Unix()))
-	level.Debug(s.log).Log("msg", "labelstore removing stale markers")
+	s.log.Debug("labelstore removing stale markers")
 	curr := time.Now()
 	idsToBeGCed := make([]*staleMarker, 0)
 	for _, stale := range s.staleGlobals {
@@ -249,7 +272,7 @@ func (s *Service) CheckAndRemoveStaleMarkers() {
 		idsToBeGCed = append(idsToBeGCed, stale)
 	}
 
-	level.Debug(s.log).Log("msg", "number of ids to remove", "count", len(idsToBeGCed))
+	s.log.Debug("number of ids to remove", "count", len(idsToBeGCed))
 
 	for _, marker := range idsToBeGCed {
 		delete(s.staleGlobals, marker.globalID)
@@ -259,6 +282,20 @@ func (s *Service) CheckAndRemoveStaleMarkers() {
 			mapping.deleteStaleIDs(marker.globalID)
 		}
 	}
+}
+
+func (s *Service) Clear() {
+	s.mut.Lock()
+	defer s.mut.Unlock()
+
+	s.globalRefID = 0
+	s.mappings = make(map[string]*remoteWriteMapping)
+	s.labelsHashToGlobal = make(map[uint64]uint64)
+	s.staleGlobals = make(map[uint64]*staleMarker)
+}
+
+func (s *Service) Enabled() bool {
+	return true
 }
 
 func (rw *remoteWriteMapping) deleteStaleIDs(globalID uint64) {
@@ -275,4 +312,55 @@ type remoteWriteMapping struct {
 	RemoteWriteID string
 	localToGlobal map[uint64]uint64
 	globalToLocal map[uint64]uint64
+}
+
+type disabledStore struct{}
+
+func (d disabledStore) Definition() alloy_service.Definition {
+	return alloy_service.Definition{
+		Name:       ServiceName,
+		ConfigType: Arguments{},
+		DependsOn:  nil,
+		Stability:  featuregate.StabilityGenerallyAvailable,
+	}
+}
+
+func (d disabledStore) Run(ctx context.Context, host alloy_service.Host) error {
+	<-ctx.Done()
+	return nil
+}
+
+func (d disabledStore) Update(newConfig any) error {
+	return nil
+}
+
+func (d disabledStore) Data() any {
+	return d
+}
+
+func (d disabledStore) AddLocalLink(componentID string, globalRefID uint64, localRefID uint64) {
+}
+
+func (d disabledStore) GetOrAddGlobalRefID(l labels.Labels) uint64 {
+	return 0
+}
+
+func (d disabledStore) GetLocalRefID(componentID string, globalRefID uint64) uint64 {
+	return 0
+}
+
+func (d disabledStore) TrackStaleness(ids []StalenessTracker) {
+}
+
+func (d disabledStore) CheckAndRemoveStaleMarkers() {
+}
+
+func (d disabledStore) ReplaceLocalLink(componentID string, globalRefID uint64, cachedLocalRef uint64, newLocalRef uint64) {
+}
+
+func (d disabledStore) Clear() {
+}
+
+func (d disabledStore) Enabled() bool {
+	return false
 }

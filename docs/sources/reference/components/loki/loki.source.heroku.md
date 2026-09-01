@@ -5,6 +5,8 @@ aliases:
 description: Learn about loki.source.heroku
 labels:
   stage: general-availability
+  products:
+    - oss
 title: loki.source.heroku
 ---
 
@@ -42,10 +44,10 @@ You can use the following arguments with `loki.source.heroku`:
 | Name                        | Type                 | Description                                                                        | Default | Required |
 | --------------------------- | -------------------- | ---------------------------------------------------------------------------------- | ------- | -------- |
 | `forward_to`                | `list(LogsReceiver)` | List of receivers to send log entries to.                                          |         | yes      |
-| `graceful_shutdown_timeout` | `duration`           | Timeout for servers graceful shutdown. If configured, should be greater than zero. | "30s"   | no       |
+| `graceful_shutdown_timeout` | `duration`           | Timeout for servers graceful shutdown. If configured, should be greater than zero. | `"30s"` | no       |
 | `labels`                    | `map(string)`        | The labels to associate with each received Heroku record.                          | `{}`    | no       |
 | `relabel_rules`             | `RelabelRules`       | Relabeling rules to apply on log entries.                                          | `{}`    | no       |
-| `use_incoming_timestamp`    | `bool`               | Whether or not to use the timestamp received from Heroku.                          | `false` | no       |
+| `use_incoming_timestamp`    | `bool`               | Whether to use the timestamp received from Heroku.                                 | `false` | no       |
 
 The `relabel_rules` field can make use of the `rules` export value from a `loki.relabel` component to apply one or more relabeling rules to log entries before they're forwarded to the list of receivers in `forward_to`.
 
@@ -53,13 +55,20 @@ The `relabel_rules` field can make use of the `rules` export value from a `loki.
 
 You can use the following blocks with `loki.source.heroku`:
 
-| Name           | Description                                        | Required |
-| -------------- | -------------------------------------------------- | -------- |
-| [`grpc`][grpc] | Configures the gRPC server that receives requests. | no       |
-| [`http`][http] | Configures the HTTP server that receives requests. | no       |
+{{< docs/alloy-config >}}
+
+| Name                  | Description                                        | Required |
+| --------------------- | -------------------------------------------------- | -------- |
+| [`grpc`][grpc]        | Configures the gRPC server that receives requests. | no       |
+| `grpc` > [`tls`][tls] | Configures TLS for the gRPC server.                | no       |
+| [`http`][http]        | Configures the HTTP server that receives requests. | no       |
+| `http` > [`tls`][tls] | Configures TLS for the HTTP server.                | no       |
 
 [http]: #http
 [grpc]: #grpc
+[tls]: #tls
+
+{{< /docs/alloy-config >}}
 
 ### `grpc`
 
@@ -67,7 +76,13 @@ You can use the following blocks with `loki.source.heroku`:
 
 ### `http`
 
-{{< docs/shared lookup="reference/components/loki-server-http.md" source="alloy" version="<ALLOY_VERSION>" >}}
+{{< docs/shared lookup="reference/components/server-http.md" source="alloy" version="<ALLOY_VERSION>" >}}
+
+### `tls`
+
+The `tls` block configures TLS for the HTTP and gRPC servers.
+
+{{< docs/shared lookup="reference/components/server-tls-config-block.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
 ## Labels
 
@@ -102,6 +117,11 @@ configuration.
 
 ## Debug metrics
 
+* `loki_source_heroku_drain_target_inflight_requests` (gauge): Current number of inflight requests.
+* `loki_source_heroku_drain_target_request_duration_seconds` (histogram): HTTP request handling time, in seconds.
+* `loki_source_heroku_drain_target_request_message_bytes` (histogram): Request message size, in bytes.
+* `loki_source_heroku_drain_target_response_message_bytes` (histogram): Response message size, in bytes.
+* `loki_source_heroku_drain_target_tcp_connections` (gauge): Current number of accepted TCP connections.
 * `loki_source_heroku_drain_entries_total` (counter): Number of successful entries received by the Heroku target.
 * `loki_source_heroku_drain_parsing_errors_total` (counter): Number of parsing errors while receiving Heroku messages.
 

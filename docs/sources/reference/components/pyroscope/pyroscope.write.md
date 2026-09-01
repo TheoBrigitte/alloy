@@ -5,6 +5,8 @@ aliases:
 description: Learn about pyroscope.write
 labels:
   stage: general-availability
+  products:
+    - oss
 title: pyroscope.write
 ---
 
@@ -42,25 +44,26 @@ You can use the following argument with `pyroscope.write`:
 
 ## Blocks
 
-The following blocks are supported inside the definition of `pyroscope.write`:
+You can use the following blocks with `pyroscope.write`:
 
-| Block                                              | Description                                                | Required |     |
-| -------------------------------------------------- | ---------------------------------------------------------- | -------- | --- |
-| [`endpoint`][endpoint]                             | Location to send profiles to.                              | no       |     |
-| `endpoint` > [`authorization`][authorization]      | Configure generic authorization to the endpoint.           | no       |     |
-| `endpoint` > [`basic_auth`][basic_auth]            | Configure `basic_auth` for authenticating to the endpoint. | no       |     |
-| `endpoint` > [`oauth2`][oauth2]                    | Configure OAuth 2.0 for authenticating to the endpoint.    | no       |     |
-| `endpoint` > `oauth2` > [`tls_config`][tls_config] | Configure TLS settings for connecting to the endpoint.     | no       |     |
-| `endpoint` > [`tls_config`][tls_config]            | Configure TLS settings for connecting to the endpoint.     | no       |     |
+{{< docs/alloy-config >}}
 
-The > symbol indicates deeper levels of nesting.
-For example, `endpoint` > `basic_auth` refers to a `basic_auth` block defined inside an `endpoint` block.
+| Block                                              | Description                                                | Required |
+| -------------------------------------------------- | ---------------------------------------------------------- | -------- |
+| [`endpoint`][endpoint]                             | Location to send profiles to.                              | no       |
+| `endpoint` > [`authorization`][authorization]      | Configure generic authorization to the endpoint.           | no       |
+| `endpoint` > [`basic_auth`][basic_auth]            | Configure `basic_auth` for authenticating to the endpoint. | no       |
+| `endpoint` > [`oauth2`][oauth2]                    | Configure OAuth 2.0 for authenticating to the endpoint.    | no       |
+| `endpoint` > `oauth2` > [`tls_config`][tls_config] | Configure TLS settings for connecting to the endpoint.     | no       |
+| `endpoint` > [`tls_config`][tls_config]            | Configure TLS settings for connecting to the endpoint.     | no       |
 
 [endpoint]: #endpoint
 [authorization]: #authorization
 [basic_auth]: #basic_auth
 [oauth2]: #oauth2
 [tls_config]: #tls_config
+
+{{< /docs/alloy-config >}}
 
 ### `endpoint`
 
@@ -71,15 +74,15 @@ The following arguments are supported:
 
 | Name                     | Type                | Description                                                                                      | Default   | Required |
 | ------------------------ | ------------------- | ------------------------------------------------------------------------------------------------ | --------- | -------- |
-| `url`                    | `string`            | Full URL to send metrics to.                                                                     |           | yes      |
+| `url`                    | `string`            | Full URL to send profiles to.                                                                    |           | yes      |
 | `bearer_token_file`      | `string`            | File containing a bearer token to authenticate with.                                             |           | no       |
 | `bearer_token`           | `secret`            | Bearer token to authenticate with.                                                               |           | no       |
 | `enable_http2`           | `bool`              | Whether HTTP2 is supported for requests.                                                         | `true`    | no       |
 | `follow_redirects`       | `bool`              | Whether redirects returned by the server should be followed.                                     | `true`    | no       |
 | `headers`                | `map(string)`       | Extra headers to deliver with the request.                                                       |           | no       |
-| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |                      | no       |
+| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |           | no       |
 | `max_backoff_period`     | `duration`          | Maximum backoff time between retries.                                                            | `"5m"`    | no       |
-| `max_backoff_retries`    | `int`               | Maximum number of retries. 0 to retry infinitely.                                                | 10        | no       |
+| `max_backoff_retries`    | `int`               | Maximum number of retries. 0 to retry infinitely.                                                | `10`      | no       |
 | `min_backoff_period`     | `duration`          | Initial backoff time between retries.                                                            | `"500ms"` | no       |
 | `name`                   | `string`            | Optional name to identify the endpoint in metrics.                                               |           | no       |
 | `no_proxy`               | `string`            | Comma-separated list of IP addresses, CIDR notations, and domain names to exclude from proxying. |           | no       |
@@ -87,18 +90,23 @@ The following arguments are supported:
 | `proxy_from_environment` | `bool`              | Use the proxy URL indicated by environment variables.                                            | `false`   | no       |
 | `proxy_url`              | `string`            | HTTP proxy to send requests through.                                                             |           | no       |
 | `remote_timeout`         | `duration`          | Timeout for requests made to the URL.                                                            | `"10s"`   | no       |
+| `retry_on_http_429`      | `bool`              | Retry when an HTTP 429 status code is received.                                                  | `true`    | no       |
 
  At most, one of the following can be provided:
 
-* [`authorization`][authorization] block
-* [`basic_auth`][basic_auth] block
-* [`bearer_token_file`][endpoint] argument
-* [`bearer_token`][endpoint] argument
-* [`oauth2`][oauth2] block
+* [`authorization`](#authorization) block
+* [`basic_auth`](#basic_auth) block
+* [`bearer_token_file`](#endpoint) argument
+* [`bearer_token`](#endpoint) argument
+* [`oauth2`](#oauth2) block
 
 {{< docs/shared lookup="reference/components/http-client-proxy-config-description.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
 When you provide multiple `endpoint` blocks, profiles are concurrently forwarded to all configured locations.
+
+The `retry_on_http_429` argument specifies whether `HTTP 429` status code responses should be treated as recoverable errors.
+Other `HTTP 4xx` status code responses are never considered recoverable errors, with the exception of `HTTP 408 Request Timeout`, which is always retried.
+When `retry_on_http_429` is enabled, the retry mechanism is governed by the backoff configuration specified through `min_backoff_period`, `max_backoff_period` and `max_backoff_retries` attributes.
 
 ### `authorization`
 
@@ -133,11 +141,37 @@ In those cases, exported fields are kept at their last healthy values.
 
 `pyroscope.write` doesn't expose any component-specific debug information.
 
+## Metrics
+
+`pyroscope.write` exposes the following metrics:
+
+| Metric                                   | Type      | Description                                                      |
+|------------------------------------------|-----------|------------------------------------------------------------------|
+| `pyroscope_write_sent_bytes_total`       | Counter   | Total number of compressed bytes sent to Pyroscope endpoints.    |
+| `pyroscope_write_dropped_bytes_total`    | Counter   | Total number of compressed bytes dropped by Pyroscope endpoints. |
+| `pyroscope_write_sent_profiles_total`    | Counter   | Total number of profiles sent to Pyroscope endpoints.            |
+| `pyroscope_write_dropped_profiles_total` | Counter   | Total number of profiles dropped by Pyroscope endpoints.         |
+| `pyroscope_write_retries_total`          | Counter   | Total number of retries to Pyroscope endpoints.                  |
+| `pyroscope_write_latency`                | Histogram | Write latency for sending profiles to Pyroscope endpoints.       |
+
+All metrics include an `endpoint` label identifying the specific endpoint URL. The `pyroscope_write_latency` metric includes an additional `type` label with the following values:
+
+- `push_total`: Total latency for push operations
+- `push_endpoint`: Per-endpoint latency for push operations  
+- `push_downstream`: Downstream request latency for push operations
+- `ingest_total`: Total latency for ingest operations
+- `ingest_endpoint`: Per-endpoint latency for ingest operations
+- `ingest_downstream`: Downstream request latency for ingest operations
+
+## Troubleshoot
+
+{{< docs/shared lookup="reference/components/pyroscope-troubleshooting.md" source="alloy" version="<ALLOY_VERSION>" >}}
+
 ## Example
 
 ```alloy
 pyroscope.write "staging" {
-  // Send metrics to a locally running Pyroscope instance.
+  // Send profiles to a locally running Pyroscope instance.
   endpoint {
     url = "http://pyroscope:4040"
     headers = {

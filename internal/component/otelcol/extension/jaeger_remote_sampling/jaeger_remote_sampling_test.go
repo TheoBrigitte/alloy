@@ -16,7 +16,6 @@ import (
 	"github.com/grafana/alloy/internal/runtime/componenttest"
 	"github.com/grafana/alloy/internal/util"
 	"github.com/grafana/alloy/syntax"
-	"github.com/phayes/freeport"
 	"github.com/stretchr/testify/require"
 )
 
@@ -45,7 +44,7 @@ func TestFileSource(t *testing.T) {
 	err := os.WriteFile(remoteSamplingConfigFile, []byte(remoteSamplingConfig), 0644)
 	require.NoError(t, err)
 
-	listenAddr := getFreeAddr(t)
+	listenAddr := componenttest.GetFreeAddr(t)
 	cfg := fmt.Sprintf(`
 	    http {
 			endpoint = "%s"
@@ -73,7 +72,7 @@ func TestContentSource(t *testing.T) {
 		}
 	}
 	`
-	listenAddr := getFreeAddr(t)
+	listenAddr := componenttest.GetFreeAddr(t)
 	cfg := fmt.Sprintf(`
 	    http {
 			endpoint = "%s"
@@ -156,6 +155,9 @@ func TestUnmarshalUsesDefaults(t *testing.T) {
 				HTTP: &jaeger_remote_sampling.HTTPServerArguments{
 					Endpoint:              "0.0.0.0:5778",
 					CompressionAlgorithms: otelcol.DefaultCompressionAlgorithms,
+					IdleTimeout:           otelcol.DefaultHTTPServerIdleTimeout,
+					ReadHeaderTimeout:     otelcol.DefaultHTTPServerReadHeaderTimeout,
+					WriteTimeout:          otelcol.DefaultHTTPServerWriteTimeout,
 				},
 				Source: jaeger_remote_sampling.ArgumentsSource{File: "remote.json"},
 				DebugMetrics: otelcolCfg.DebugMetricsArguments{
@@ -195,6 +197,9 @@ func TestUnmarshalUsesDefaults(t *testing.T) {
 				HTTP: &jaeger_remote_sampling.HTTPServerArguments{
 					Endpoint:              "blerg",
 					CompressionAlgorithms: otelcol.DefaultCompressionAlgorithms,
+					IdleTimeout:           otelcol.DefaultHTTPServerIdleTimeout,
+					ReadHeaderTimeout:     otelcol.DefaultHTTPServerReadHeaderTimeout,
+					WriteTimeout:          otelcol.DefaultHTTPServerWriteTimeout,
 				},
 				Source: jaeger_remote_sampling.ArgumentsSource{File: "remote.json"},
 				DebugMetrics: otelcolCfg.DebugMetricsArguments{
@@ -294,13 +299,4 @@ func TestUnmarshalRequiresExactlyOneSource(t *testing.T) {
 		err := syntax.Unmarshal([]byte(tc.cfg), &args)
 		require.EqualError(t, err, tc.expectedError)
 	}
-}
-
-func getFreeAddr(t *testing.T) string {
-	t.Helper()
-
-	portNumber, err := freeport.GetFreePort()
-	require.NoError(t, err)
-
-	return fmt.Sprintf("localhost:%d", portNumber)
 }

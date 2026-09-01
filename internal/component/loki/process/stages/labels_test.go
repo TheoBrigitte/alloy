@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-kit/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/grafana/alloy/internal/featuregate"
-	util_log "github.com/grafana/loki/v3/pkg/util/log"
+	"github.com/grafana/alloy/internal/runtime/logging"
+	"github.com/grafana/loki/pkg/push"
 )
 
 var testLabelsYaml = ` stage.json {
@@ -40,8 +40,30 @@ var testLabelsLogLineWithMissingKey = `
 }
 `
 
-func TestLabelsPipeline_Labels(t *testing.T) {
-	pl, err := NewPipeline(util_log.Logger, loadConfig(testLabelsYaml), nil, prometheus.DefaultRegisterer, featuregate.StabilityGenerallyAvailable)
+var testLabelsStrucuturedMetadataYaml = `
+// Create strucutured metadata
+stage.static_labels {
+	values = {
+	  "foo" = "bar",
+	}
+}
+stage.structured_metadata {
+	values = {
+	  "baz" = "foo",
+	}
+}
+
+// Create label from structured metadata
+stage.labels {
+    source_type = "structured_metadata"
+	values      = {
+	  "from_structured" = "baz",
+	}
+}
+`
+
+func TestLabelsPipeline_LabelsFromExtracted(t *testing.T) {
+	pl, err := NewPipeline(logging.NewSlogNop(), loadConfig(testLabelsYaml), prometheus.DefaultRegisterer, featuregate.StabilityGenerallyAvailable)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,20 +76,31 @@ func TestLabelsPipeline_Labels(t *testing.T) {
 	assert.Equal(t, expectedLbls, out.Labels)
 }
 
-func TestLabelsPipelineWithMissingKey_Labels(t *testing.T) {
-	var buf bytes.Buffer
-	w := log.NewSyncWriter(&buf)
-	logger := log.NewLogfmtLogger(w)
-	pl, err := NewPipeline(logger, loadConfig(testLabelsYaml), nil, prometheus.DefaultRegisterer, featuregate.StabilityGenerallyAvailable)
+func TestLabelsPipeline_LabelsFromStructuredMetadata(t *testing.T) {
+	pl, err := NewPipeline(logging.NewSlogNop(), loadConfig(testLabelsStrucuturedMetadataYaml), prometheus.DefaultRegisterer, featuregate.StabilityGenerallyAvailable)
 	if err != nil {
 		t.Fatal(err)
 	}
-	Debug = true
+	expectedLbls := model.LabelSet{
+		"from_structured": "bar",
+	}
 
+	out := processEntries(pl, newEntry(nil, nil, "", time.Now()))[0]
+	assert.Equal(t, expectedLbls, out.Labels)
+}
+
+func TestLabelsPipelineWithMissingKey_Labels(t *testing.T) {
+	var buf bytes.Buffer
+	alloyLogger, err := logging.New(&buf, logging.Options{Level: logging.LevelDebug, Format: logging.FormatLogfmt})
+	assert.NoError(t, err)
+	pl, err := NewPipeline(alloyLogger.Slog(), loadConfig(testLabelsYaml), prometheus.DefaultRegisterer, featuregate.StabilityGenerallyAvailable)
+	if err != nil {
+		t.Fatal(err)
+	}
 	_ = processEntries(pl, newEntry(nil, nil, testLabelsLogLineWithMissingKey, time.Now()))
 
-	expectedLog := "level=debug msg=\"failed to convert extracted label value to string\" err=\"can't convert <nil> to string\" type=null"
-	if !(strings.Contains(buf.String(), expectedLog)) {
+	expectedLog := "level=debug msg=\"failed to convert extracted label value to string\" stage=labels err=\"can't convert <nil> to string\" type=<nil>"
+	if !strings.Contains(buf.String(), expectedLog) {
 		t.Errorf("\nexpected: %s\n+actual: %s", expectedLog, buf.String())
 	}
 }
@@ -77,7 +110,7 @@ var (
 	lv3 = ""
 )
 
-var emptyLabelsConfig = LabelsConfig{nil}
+var emptyLabelsConfig = LabelsConfig{nil, ""}
 
 func TestLabels(t *testing.T) {
 	tests := map[string]struct {
@@ -97,12 +130,37 @@ func TestLabels(t *testing.T) {
 			err:          fmt.Errorf(ErrInvalidLabelName, "\xfd"),
 			expectedCfgs: nil,
 		},
-		"label value is set from name": {
-			config: LabelsConfig{Values: map[string]*string{
-				"l1": &lv1,
-				"l2": nil,
-				"l3": &lv3,
-			}},
+		"invalid source type": {
+			config: LabelsConfig{
+				Values:     map[string]*string{"l1": ptr("")},
+				SourceType: "invalid_source_type",
+			},
+			err:          fmt.Errorf("invalid labels source_type: %s. Can only be 'extracted' or 'structured_metadata'", "invalid_source_type"),
+			expectedCfgs: nil,
+		},
+		"label value is set from name for extracted": {
+			config: LabelsConfig{
+				SourceType: SourceTypeExtractedMap,
+				Values: map[string]*string{
+					"l1": &lv1,
+					"l2": nil,
+					"l3": &lv3,
+				}},
+			err: nil,
+			expectedCfgs: map[string]string{
+				"l1": lv1,
+				"l2": "l2",
+				"l3": "l3",
+			},
+		},
+		"label value is set from name for structured_metadata": {
+			config: LabelsConfig{
+				SourceType: SourceTypeStructuredMetadata,
+				Values: map[string]*string{
+					"l1": &lv1,
+					"l2": nil,
+					"l3": &lv3,
+				}},
 			err: nil,
 			expectedCfgs: map[string]string{
 				"l1": lv1,
@@ -115,7 +173,7 @@ func TestLabels(t *testing.T) {
 		test := test
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			actual, err := validateLabelsConfig(test.config)
+			actual, err := validateLabelsConfig(&test.config)
 			if (err != nil) != (test.err != nil) {
 				t.Errorf("validateLabelsConfig() expected error = %v, actual error = %v", test.err, err)
 				return
@@ -131,32 +189,65 @@ func TestLabels(t *testing.T) {
 	}
 }
 
-func TestLabelStage_Process(t *testing.T) {
+func TestLabelsStage_Process(t *testing.T) {
 	sourceName := "diff_source"
 	tests := map[string]struct {
-		config         LabelsConfig
-		extractedData  map[string]interface{}
-		inputLabels    model.LabelSet
-		expectedLabels model.LabelSet
+		config            LabelsConfig
+		extractedData     map[string]any
+		strcturedMetadata push.LabelsAdapter
+		inputLabels       model.LabelSet
+		expectedLabels    model.LabelSet
 	}{
-		"extract_success": {
+		"extract_success_extracted": {
 			LabelsConfig{Values: map[string]*string{
 				"testLabel": nil,
 			}},
-			map[string]interface{}{
+			map[string]any{
 				"testLabel": "testValue",
+			},
+			push.LabelsAdapter{},
+			model.LabelSet{},
+			model.LabelSet{
+				"testLabel": "testValue",
+			},
+		},
+		"extract_success_structured_metadata": {
+			LabelsConfig{
+				SourceType: SourceTypeStructuredMetadata,
+				Values: map[string]*string{
+					"testLabel": ptr("testStrucuturedMetadata"),
+				}},
+			map[string]any{},
+			push.LabelsAdapter{
+				push.LabelAdapter{Name: "testStrucuturedMetadata", Value: "testValue"},
 			},
 			model.LabelSet{},
 			model.LabelSet{
 				"testLabel": "testValue",
 			},
 		},
-		"different_source_name": {
+		"different_source_name_extracted": {
 			LabelsConfig{Values: map[string]*string{
 				"testLabel": &sourceName,
 			}},
-			map[string]interface{}{
+			map[string]any{
 				sourceName: "testValue",
+			},
+			push.LabelsAdapter{},
+			model.LabelSet{},
+			model.LabelSet{
+				"testLabel": "testValue",
+			},
+		},
+		"different_source_name_structured_metadata": {
+			LabelsConfig{
+				SourceType: SourceTypeStructuredMetadata,
+				Values: map[string]*string{
+					"testLabel": &sourceName,
+				}},
+			map[string]any{},
+			push.LabelsAdapter{
+				push.LabelAdapter{Name: sourceName, Value: "testValue"},
 			},
 			model.LabelSet{},
 			model.LabelSet{
@@ -167,7 +258,19 @@ func TestLabelStage_Process(t *testing.T) {
 			LabelsConfig{Values: map[string]*string{
 				"testLabel": &sourceName,
 			}},
-			map[string]interface{}{},
+			map[string]any{},
+			push.LabelsAdapter{},
+			model.LabelSet{},
+			model.LabelSet{},
+		},
+		"empty_structured_metadata": {
+			LabelsConfig{
+				SourceType: SourceTypeStructuredMetadata,
+				Values: map[string]*string{
+					"testLabel": &sourceName,
+				}},
+			map[string]any{},
+			push.LabelsAdapter{},
 			model.LabelSet{},
 			model.LabelSet{},
 		},
@@ -176,12 +279,14 @@ func TestLabelStage_Process(t *testing.T) {
 		test := test
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			st, err := newLabelStage(util_log.Logger, test.config)
+			st, err := newLabelStage(logging.NewSlogNop(), test.config)
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			out := processEntries(st, newEntry(test.extractedData, test.inputLabels, "", time.Time{}))[0]
+			entry := newEntry(test.extractedData, test.inputLabels, "", time.Time{})
+			entry.StructuredMetadata = test.strcturedMetadata
+			out := processEntries(st, entry)[0]
 			assert.Equal(t, test.expectedLabels, out.Labels)
 		})
 	}

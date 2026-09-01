@@ -6,17 +6,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-kit/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/grafana/alloy/internal/component/common/loki/client"
 	"github.com/grafana/alloy/internal/featuregate"
-	"github.com/grafana/loki/v3/clients/pkg/promtail/client"
-
-	lokiutil "github.com/grafana/loki/v3/pkg/util"
-	util_log "github.com/grafana/loki/v3/pkg/util/log"
+	"github.com/grafana/alloy/internal/runtime/logging"
 )
 
 var testTenantAlloyExtractedData = `
@@ -38,16 +35,14 @@ var testTenantLogLineWithMissingKey = `
 
 func TestPipelineWithMissingKey_Tenant(t *testing.T) {
 	var buf bytes.Buffer
-	w := log.NewSyncWriter(&buf)
-	logger := log.NewLogfmtLogger(w)
-	pl, err := NewPipeline(logger, loadConfig(testTenantAlloyExtractedData), nil, prometheus.DefaultRegisterer, featuregate.StabilityGenerallyAvailable)
+	logger, err := logging.New(&buf, logging.Options{Level: logging.LevelDebug, Format: logging.FormatLogfmt})
+	require.NoError(t, err)
+	pl, err := NewPipeline(logger.Slog(), loadConfig(testTenantAlloyExtractedData), prometheus.DefaultRegisterer, featuregate.StabilityGenerallyAvailable)
 	if err != nil {
 		t.Fatal(err)
 	}
-	Debug = true
-
 	_ = processEntries(pl, newEntry(nil, nil, testTenantLogLineWithMissingKey, time.Now()))
-	expectedLog := "level=debug msg=\"failed to convert value to string\" err=\"can't convert <nil> to string\" type=null"
+	expectedLog := "level=debug msg=\"failed to convert value to string\" stage=tenant err=\"can't convert <nil> to string\" type=<nil>"
 	if !(strings.Contains(buf.String(), expectedLog)) {
 		t.Errorf("\nexpected: %s\n+actual: %s", expectedLog, buf.String())
 	}
@@ -129,7 +124,7 @@ func TestTenantStage_Validation(t *testing.T) {
 		testData := testData
 
 		t.Run(testName, func(t *testing.T) {
-			stage, err := newTenantStage(util_log.Logger, testData.config)
+			stage, err := newTenantStage(logging.NewSlogNop(), testData.config)
 
 			if testData.expectedErr != nil {
 				assert.EqualError(t, err, testData.expectedErr.Error())
@@ -148,56 +143,56 @@ func TestTenantStage_Process(t *testing.T) {
 	tests := map[string]struct {
 		config         TenantConfig
 		inputLabels    model.LabelSet
-		inputExtracted map[string]interface{}
+		inputExtracted map[string]any
 		expectedTenant *string
 	}{
 		"should not set the tenant if the source field is not defined in the extracted map": {
 			config:         TenantConfig{Source: "tenant_id"},
 			inputLabels:    model.LabelSet{},
-			inputExtracted: map[string]interface{}{},
+			inputExtracted: map[string]any{},
 			expectedTenant: nil,
 		},
 		"should not override the tenant if the source field is not defined in the extracted map": {
 			config:         TenantConfig{Source: "tenant_id"},
 			inputLabels:    model.LabelSet{client.ReservedLabelTenantID: "foo"},
-			inputExtracted: map[string]interface{}{},
-			expectedTenant: lokiutil.StringRef("foo"),
+			inputExtracted: map[string]any{},
+			expectedTenant: ptr("foo"),
 		},
 		"should set the tenant if the source field is defined in the extracted map": {
 			config:         TenantConfig{Source: "tenant_id"},
 			inputLabels:    model.LabelSet{},
-			inputExtracted: map[string]interface{}{"tenant_id": "bar"},
-			expectedTenant: lokiutil.StringRef("bar"),
+			inputExtracted: map[string]any{"tenant_id": "bar"},
+			expectedTenant: ptr("bar"),
 		},
 		"should set the tenant if the label is defined in the label map": {
 			config:         TenantConfig{Label: "tenant_id"},
 			inputLabels:    model.LabelSet{"tenant_id": "bar"},
-			inputExtracted: map[string]interface{}{},
-			expectedTenant: lokiutil.StringRef("bar"),
+			inputExtracted: map[string]any{},
+			expectedTenant: ptr("bar"),
 		},
 		"should override the tenant if the source field is defined in the extracted map": {
 			config:         TenantConfig{Source: "tenant_id"},
 			inputLabels:    model.LabelSet{client.ReservedLabelTenantID: "foo"},
-			inputExtracted: map[string]interface{}{"tenant_id": "bar"},
-			expectedTenant: lokiutil.StringRef("bar"),
+			inputExtracted: map[string]any{"tenant_id": "bar"},
+			expectedTenant: ptr("bar"),
 		},
 		"should not set the tenant if the source field data type can't be converted to string": {
 			config:         TenantConfig{Source: "tenant_id"},
 			inputLabels:    model.LabelSet{},
-			inputExtracted: map[string]interface{}{"tenant_id": []string{"bar"}},
+			inputExtracted: map[string]any{"tenant_id": []string{"bar"}},
 			expectedTenant: nil,
 		},
 		"should set the tenant with the configured static value": {
 			config:         TenantConfig{Value: "bar"},
 			inputLabels:    model.LabelSet{},
-			inputExtracted: map[string]interface{}{},
-			expectedTenant: lokiutil.StringRef("bar"),
+			inputExtracted: map[string]any{},
+			expectedTenant: ptr("bar"),
 		},
 		"should override the tenant with the configured static value": {
 			config:         TenantConfig{Value: "bar"},
 			inputLabels:    model.LabelSet{client.ReservedLabelTenantID: "foo"},
-			inputExtracted: map[string]interface{}{},
-			expectedTenant: lokiutil.StringRef("bar"),
+			inputExtracted: map[string]any{},
+			expectedTenant: ptr("bar"),
 		},
 	}
 
@@ -205,7 +200,7 @@ func TestTenantStage_Process(t *testing.T) {
 		testData := testData
 
 		t.Run(testName, func(t *testing.T) {
-			stage, err := newTenantStage(util_log.Logger, testData.config)
+			stage, err := newTenantStage(logging.NewSlogNop(), testData.config)
 			require.NoError(t, err)
 
 			// Process and dummy line and ensure nothing has changed except

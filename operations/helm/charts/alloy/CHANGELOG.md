@@ -10,6 +10,243 @@ internal API changes are not present.
 Unreleased
 ----------
 
+1.12.1 (2026-08-26)
+----------
+
+### Enhancements
+
+- Update to Grafana Alloy v1.19.2 (@dehaansa)
+
+1.12.0 (2026-08-24)
+----------
+
+### Enhancements
+
+- Update to Grafana Alloy v1.19.0 (@dehaansa)
+
+1.11.1 (2026-08-06)
+----------
+
+### Enhancements
+
+- Harden the default `securityContext` for the config reloader sidecar: disable privilege escalation, use a read-only root filesystem, drop all capabilities, run as non-root, and set the `RuntimeDefault` seccomp profile. (@petewall)
+
+- Update to Grafana Alloy v1.18.1 (@blewis12)
+
+1.11.0 (2026-07-20)
+----------
+
+### Enhancements
+
+- Add `alloy.command` to override the entrypoint command for the Alloy container. This makes it possible to launch the Alloy binary from its image path when running as a HostProcess container on Windows nodes. (@petewall)
+
+- Update to Grafana Alloy v1.18.0 (@blewis12)
+
+1.10.1 (2026-06-29)
+----------
+
+### Enhancements
+
+- Update to Grafana Alloy v1.17.1 (@x1unix)
+
+1.10.0 (2026-06-12)
+----------
+
+### Enhancements
+
+- Allow configuring of the alloy service externalTrafficPolicy (@at-blacknight)
+
+- Update to Grafana Alloy v1.17.0 (@kgeckhart)
+
+1.9.0 (2026-06-08)
+----------
+
+### Enhancements
+
+- Add `controller.autoscaling.horizontal.externalHPA` to support externally-managed HPAs (e.g. KEDA `ScaledObject`s). When set to `true`, the chart omits `spec.replicas` from the workload and does not render its own HorizontalPodAutoscaler. Mutually exclusive with `horizontal.enabled`. (#6311)
+
+- Update to Grafana Alloy v1.16.3 (@kgeckhart)
+
+### Bug fixes
+
+- Fix `templates/configmap.yaml` ignoring `alloy.configMap.key`. The pod template honors the value via the `alloy.config-map.key` helper, but the ConfigMap template hardcoded the data key as `config.alloy`, producing a key/expected-path mismatch that crash-looped Alloy when the value was set. (#6312)
+
+1.8.2 (2026-05-25)
+----------
+
+### Enhancements
+
+- Update config-reloader default version to v0.91.0 (@kalleep)
+
+1.8.1 (2026-05-05)
+----------
+
+### Enhancements
+
+- Update to Grafana Alloy v1.16.1 (@x1unix)
+
+1.8.0 (2026-04-23)
+----------
+
+### Enhancements
+
+- Add the ability to set global.image.pullPolicy to update both Alloy and Config Reloader. (@petewall)
+
+- Update to Grafana Alloy v1.16.0 (@jharvey10)
+
+
+1.7.0 (2026-04-01)
+----------
+
+### Bug fixes
+
+- Fix `alloy.extraPorts` not applying `nodePort` when `service.type` is `NodePort`. (@siyu77)
+
+### Enhancements
+
+- Set a `K8S_NODE_NAME` environment variable used by the `otelcol.processor.resourcedetection` component. (@armsnyder)
+
+- Update to Grafana Alloy v1.15.0. (@blewis12)
+
+1.6.2 (2026-03-05)
+----------
+
+### Enhancements
+
+- Update to Grafana Alloy v1.14.0. (@blewis12)
+
+1.6.1 (2026-03-02)
+----------
+
+### Enhancements
+
+- Update to Grafana Alloy v1.13.2. (@prateekpandey14)
+
+
+1.6.0 (2026-02-05)
+----------
+
+### Enhancements
+
+- Update to Grafana Alloy v1.13.0. (@ptodev)
+
+1.5.3 (2026-01-28)
+----------
+
+### Enhancements
+
+- Remove `nodes/proxy` RBAC rule and replace with `nodes/pods`. (@petewall)
+
+1.5.2 (2026-01-12)
+----------
+
+### Enhancements
+
+- Update to Grafana Alloy v1.12.2. (@dehaansa)
+
+1.5.1 (2025-12-16)
+----------
+
+### Enhancements
+
+- Update to Grafana Alloy v1.12.1. (@jharvey10)
+
+1.5.0 (2025-12-01)
+----------
+
+### Enhancements
+
+- Update to Grafana Alloy v1.12.0. (@jharvey10)
+
+- Update RBAC rules to permit `mimir.alerts.kubernetes` to work by default. (@ptodev)
+
+### Bug fixes
+
+- Correct `extraEnv` indentation in container template (@orkhan-huseyn)
+- Remove invalid creationTimestamp in podlogs.monitoring.grafana.com CRD (@vehagn)
+
+1.4.0 (2025-10-27)
+----------
+
+### Enhancements
+
+- Update to Grafana Alloy v1.11.3. (@kalleep)
+
+- Allow for creating Roles and RoleBindings instead of ClusterRoles and ClusterRoleBindings. (@petewall)
+
+- Allow for customizing the specific RBAC rules being created. (@petewall & @kun98-liu)
+
+1.3.1 (2025-10-10)
+----------
+
+- Update to Grafana Alloy v1.11.2. (@kalleep)
+
+1.3.0 (2025-09-30)
+----------
+
+### Bug fixes
+
+- Update to Grafana Alloy v1.11.0. (@kalleep)
+
+- Avoid unnecessary pod restarts when the config reloader is enabled by not setting `checksum/config` pod annotation. (@ebuildy)
+
+- Remove readiness probe using curl when http server port is disabled. (@kalleep)
+
+1.2.1 (2025-08-07)
+----------
+
+### Enhancements
+
+- Update to Grafana Alloy v1.10.1. (@kalleep)
+
+- Add support for configuring initialDelaySeconds and timeoutSeconds in Helm chart for readiness probe. (@peter-meltcafe)
+
+- Add option to not expose http server port. (@kun98-liu)
+
+- Add support to provide extraLabels to alloy.controler (@evkuzin)
+
+1.2.0 (2025-07-16)
+----------
+
+### Enhancements
+
+- Update to Grafana Alloy v1.10.0. (@ptodev)
+
+1.1.2 (2025-06-26)
+----------
+- Add NetworkPolicy support. (@TheRealNoob)
+
+- Update to Grafana Alloy v1.9.2. (@ptodev)
+
+1.1.1 (2025-06-05)
+----------
+
+### Bug fixes
+
+- Fix `alloy.mounts.extra` incorrect list after templating. (@sentoz)
+
+- Update to Grafana Alloy v1.9.1. (@thampiotr)
+
+1.1.0 (2025-06-02)
+----------
+
+### Bug fixes
+
+- Fix VPA issue not rendering correctly. (@mattdurham)
+
+- Fix `app.kubernetes.io/version` label not being set correctly. (@wildum)
+
+### Enhancements
+
+- Update to Grafana Alloy v1.9.0. (@wildum)
+
+1.0.3 (2025-05-05)
+----------
+
+### Enhancements
+
+- Update to Grafana Alloy v1.8.3. (@kalleep)
+
 1.0.2 (2025-04-23)
 ----------
 

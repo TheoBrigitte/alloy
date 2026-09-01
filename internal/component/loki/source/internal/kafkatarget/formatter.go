@@ -13,10 +13,14 @@ import (
 )
 
 func format(lbs labels.Labels, cfg []*relabel.Config) model.LabelSet {
-	if len(lbs) == 0 {
+	if lbs.IsEmpty() {
 		return nil
 	}
-	processed, _ := relabel.Process(lbs, cfg...)
+	lb := labels.NewBuilder(lbs)
+	if !relabel.ProcessBuilder(lb, cfg...) {
+		return nil
+	}
+	processed := lb.Labels()
 	labelOut := model.LabelSet(LabelsToMetric(processed))
 	for k := range labelOut {
 		if strings.HasPrefix(string(k), "__") {
@@ -29,9 +33,9 @@ func format(lbs labels.Labels, cfg []*relabel.Config) model.LabelSet {
 // LabelsToMetric converts a Labels to Metric
 // Don't do this on any performance sensitive paths.
 func LabelsToMetric(ls labels.Labels) model.Metric {
-	m := make(model.Metric, len(ls))
-	for _, l := range ls {
+	m := make(model.Metric, ls.Len())
+	ls.Range(func(l labels.Label) {
 		m[model.LabelName(l.Name)] = model.LabelValue(l.Value)
-	}
+	})
 	return m
 }

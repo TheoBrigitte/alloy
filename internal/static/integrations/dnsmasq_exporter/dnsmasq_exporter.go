@@ -2,12 +2,14 @@
 package dnsmasq_exporter
 
 import (
-	"github.com/go-kit/log"
+	"log/slog"
+
 	"github.com/google/dnsmasq_exporter/collector"
+	"github.com/miekg/dns"
+
 	"github.com/grafana/alloy/internal/static/integrations"
 	integrations_v2 "github.com/grafana/alloy/internal/static/integrations/v2"
 	"github.com/grafana/alloy/internal/static/integrations/v2/metricsutils"
-	"github.com/miekg/dns"
 )
 
 // DefaultConfig is the default config for dnsmasq_exporter.
@@ -35,17 +37,17 @@ func (c *Config) Name() string {
 }
 
 // InstanceKey returns the address of the dnsmasq server.
-func (c *Config) InstanceKey(agentKey string) (string, error) {
+func (c *Config) InstanceKey(_ string) (string, error) {
 	return c.DnsmasqAddress, nil
 }
 
 // NewIntegration converts this config into an instance of an integration.
-func (c *Config) NewIntegration(l log.Logger) (integrations.Integration, error) {
-	return New(l, c)
+func (c *Config) NewIntegration(_ *slog.Logger) (integrations.Integration, error) {
+	return New(c)
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler for Config.
-func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (c *Config) UnmarshalYAML(unmarshal func(any) error) error {
 	*c = DefaultConfig
 
 	type plain Config
@@ -59,7 +61,7 @@ func init() {
 
 // New creates a new dnsmasq_exporter integration. The integration scrapes metrics
 // from a dnsmasq server.
-func New(log log.Logger, c *Config) (integrations.Integration, error) {
+func New(c *Config) (integrations.Integration, error) {
 	dnsmasqConfig := collector.Config{
 		DnsClient: &dns.Client{
 			SingleInflight: true,

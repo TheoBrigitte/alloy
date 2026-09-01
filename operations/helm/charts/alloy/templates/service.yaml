@@ -21,6 +21,9 @@ spec:
     {{- include "alloy.selectorLabels" . | nindent 4 }}
   {{- if semverCompare ">=1.26-0" .Capabilities.KubeVersion.Version }}
   internalTrafficPolicy: {{.Values.service.internalTrafficPolicy}}
+  {{- if or (eq .Values.service.type "LoadBalancer") (eq .Values.service.type "NodePort") }}
+  externalTrafficPolicy: {{.Values.service.externalTrafficPolicy}}
+  {{- end }}
   {{- end }}
   ports:
     - name: http-metrics
@@ -32,6 +35,9 @@ spec:
       protocol: "TCP"
 {{- range $portMap := $values.extraPorts }}
     - name: {{ $portMap.name }}
+      {{- if eq $.Values.service.type "NodePort" }}
+      nodePort: {{ $portMap.nodePort }}
+      {{- end }}
       port: {{ $portMap.port }}
       targetPort: {{ $portMap.targetPort }}
       protocol: {{ coalesce $portMap.protocol "TCP" }}

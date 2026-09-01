@@ -7,9 +7,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 
-	util_log "github.com/grafana/loki/v3/pkg/util/log"
-
 	"github.com/grafana/alloy/internal/featuregate"
+	"github.com/grafana/alloy/internal/runtime/logging"
 	"github.com/grafana/alloy/internal/util"
 )
 
@@ -27,6 +26,25 @@ stage.logfmt {
 		source  = "extra"
 }`
 
+var testLogfmtAlloyRegex = `
+stage.logfmt {
+    regex = "pod_.*"
+}
+`
+
+var testLogfmtAlloyRegexAll = `
+stage.logfmt {
+    regex = ".*"
+}
+`
+
+var testLogfmtAlloyRegexAndMapping = `
+stage.logfmt {
+    mapping = { "out" = "message", "app" = ""}
+    regex = "(app|duration)"
+}
+`
+
 func TestLogfmt(t *testing.T) {
 	var testLogfmtLogLine = `
 		time=2012-11-01T22:08:41+00:00 app=loki	level=WARN duration=125 message="this is a log line" extra="user=foo""
@@ -36,12 +54,12 @@ func TestLogfmt(t *testing.T) {
 	tests := map[string]struct {
 		config          string
 		entry           string
-		expectedExtract map[string]interface{}
+		expectedExtract map[string]any
 	}{
 		"successfully run a pipeline with 1 logfmt stage without source": {
 			testLogfmtAlloySingleStageWithoutSource,
 			testLogfmtLogLine,
-			map[string]interface{}{
+			map[string]any{
 				"out":      "this is a log line",
 				"app":      "loki",
 				"duration": "125",
@@ -50,9 +68,38 @@ func TestLogfmt(t *testing.T) {
 		"successfully run a pipeline with 2 logfmt stages with source": {
 			testLogfmtAlloyMultiStageWithSource,
 			testLogfmtLogLine,
-			map[string]interface{}{
+			map[string]any{
 				"extra": "user=foo",
 				"user":  "foo",
+			},
+		},
+		"successfully extract regex values from logfmt": {
+			testLogfmtAlloyRegex,
+			`time=2012-11-01T22:08:41+00:00 pod_name=my-pod-123 pod_label=my-label`,
+			map[string]any{
+				"pod_name":  "my-pod-123",
+				"pod_label": "my-label",
+			},
+		},
+		"successfully extract all values via regex from logfmt": {
+			testLogfmtAlloyRegexAll,
+			testLogfmtLogLine,
+			map[string]any{
+				"time":     "2012-11-01T22:08:41+00:00",
+				"app":      "loki",
+				"level":    "WARN",
+				"duration": "125",
+				"message":  "this is a log line",
+				"extra":    "user=foo",
+			},
+		},
+		"successfully extract values with expressions and regex from logfmt": {
+			testLogfmtAlloyRegexAndMapping,
+			testLogfmtLogLine,
+			map[string]any{
+				"out":      "this is a log line",
+				"app":      "loki",
+				"duration": "125",
 			},
 		},
 	}
@@ -63,7 +110,7 @@ func TestLogfmt(t *testing.T) {
 		t.Run(testName, func(t *testing.T) {
 			t.Parallel()
 
-			pl, err := NewPipeline(util_log.Logger, loadConfig(testData.config), nil, prometheus.DefaultRegisterer, featuregate.StabilityGenerallyAvailable)
+			pl, err := NewPipeline(logging.NewSlogNop(), loadConfig(testData.config), prometheus.DefaultRegisterer, featuregate.StabilityGenerallyAvailable)
 			assert.NoError(t, err)
 			out := processEntries(pl, newEntry(nil, nil, testData.entry, time.Now()))[0]
 			assert.Equal(t, testData.expectedExtract, out.Extracted)
@@ -82,7 +129,7 @@ func TestLogfmtConfigValidation(t *testing.T) {
 		"no mapping": {
 			LogfmtConfig{},
 			0,
-			ErrMappingRequired,
+			ErrMappingOrRegexRequired,
 		},
 		"valid without source": {
 			LogfmtConfig{
@@ -109,7 +156,7 @@ func TestLogfmtConfigValidation(t *testing.T) {
 	for tName, tt := range tests {
 		tt := tt
 		t.Run(tName, func(t *testing.T) {
-			got, err := validateLogfmtConfig(&tt.config)
+			got, _, err := validateLogfmtConfig(&tt.config)
 			if tt.err != nil {
 				assert.EqualError(t, err, tt.err.Error())
 			} else {
@@ -133,9 +180,9 @@ func TestLogfmtParser_Parse(t *testing.T) {
 	logger := util.TestAlloyLogger(t)
 	tests := map[string]struct {
 		config          LogfmtConfig
-		extracted       map[string]interface{}
+		extracted       map[string]any
 		entry           string
-		expectedExtract map[string]interface{}
+		expectedExtract map[string]any
 	}{
 		"successfully decode logfmt on entry": {
 			LogfmtConfig{
@@ -147,9 +194,9 @@ func TestLogfmtParser_Parse(t *testing.T) {
 					"message": "",
 				},
 			},
-			map[string]interface{}{},
+			map[string]any{},
 			testLogfmtLogFixture,
-			map[string]interface{}{
+			map[string]any{
 				"time":    "2012-11-01T22:08:41+00:00",
 				"app":     "loki",
 				"level":   "WARN",
@@ -168,11 +215,11 @@ func TestLogfmtParser_Parse(t *testing.T) {
 				},
 				Source: "log",
 			},
-			map[string]interface{}{
+			map[string]any{
 				"log": testLogfmtLogFixture,
 			},
 			"{}",
-			map[string]interface{}{
+			map[string]any{
 				"time":    "2012-11-01T22:08:41+00:00",
 				"app":     "loki",
 				"level":   "WARN",
@@ -188,9 +235,9 @@ func TestLogfmtParser_Parse(t *testing.T) {
 				},
 				Source: "log",
 			},
-			map[string]interface{}{},
+			map[string]any{},
 			testLogfmtLogFixture,
-			map[string]interface{}{},
+			map[string]any{},
 		},
 		"invalid logfmt on entry": {
 			LogfmtConfig{
@@ -198,9 +245,9 @@ func TestLogfmtParser_Parse(t *testing.T) {
 					"expr1": "",
 				},
 			},
-			map[string]interface{}{},
+			map[string]any{},
 			"{\"invalid\":\"logfmt\"}",
-			map[string]interface{}{},
+			map[string]any{},
 		},
 		"invalid logfmt on extracted[source]": {
 			LogfmtConfig{
@@ -209,11 +256,11 @@ func TestLogfmtParser_Parse(t *testing.T) {
 				},
 				Source: "log",
 			},
-			map[string]interface{}{
+			map[string]any{
 				"log": "not logfmt",
 			},
 			testLogfmtLogFixture,
-			map[string]interface{}{
+			map[string]any{
 				"log": "not logfmt",
 			},
 		},
@@ -224,11 +271,11 @@ func TestLogfmtParser_Parse(t *testing.T) {
 				},
 				Source: "log",
 			},
-			map[string]interface{}{
+			map[string]any{
 				"log": nil,
 			},
 			testLogfmtLogFixture,
-			map[string]interface{}{
+			map[string]any{
 				"log": nil,
 			},
 		},
@@ -237,7 +284,7 @@ func TestLogfmtParser_Parse(t *testing.T) {
 		tt := tt
 		t.Run(tName, func(t *testing.T) {
 			t.Parallel()
-			p, err := New(logger, nil, StageConfig{LogfmtConfig: &tt.config}, nil, featuregate.StabilityGenerallyAvailable)
+			p, err := New(logger.Slog(), StageConfig{LogfmtConfig: &tt.config}, nil, featuregate.StabilityGenerallyAvailable)
 			assert.NoError(t, err)
 			out := processEntries(p, newEntry(tt.extracted, nil, tt.entry, time.Now()))[0]
 

@@ -5,6 +5,8 @@ aliases:
 description: Learn about loki.source.awsfirehose
 labels:
   stage: general-availability
+  products:
+    - oss
 title: loki.source.awsfirehose
 ---
 
@@ -86,12 +88,12 @@ Example of the valid `X-Amz-Firehose-Common-Attributes` value with two custom la
 
 You can use the following arguments with `loki.source.awsfirehose`:
 
-| Name                     | Type                 | Description                                                    | Default | Required |
-| ------------------------ | -------------------- | -------------------------------------------------------------- | ------- | -------- |
-| `forward_to`             | `list(LogsReceiver)` | List of receivers to send log entries to.                      |         | yes      |
-| `access_key`             | `secret`             | If set, require Data Firehose to provide a matching key.       | `""`    | no       |
-| `relabel_rules`          | `RelabelRules`       | Relabeling rules to apply on log entries.                      | `{}`    | no       |
-| `use_incoming_timestamp` | `bool`               | Whether or not to use the timestamp received from the request. | `false` | no       |
+| Name                     | Type                 | Description                                              | Default | Required |
+| ------------------------ | -------------------- | -------------------------------------------------------- | ------- | -------- |
+| `forward_to`             | `list(LogsReceiver)` | List of receivers to send log entries to.                |         | yes      |
+| `access_key`             | `secret`             | If set, require Data Firehose to provide a matching key. | `""`    | no       |
+| `relabel_rules`          | `RelabelRules`       | Relabeling rules to apply on log entries.                | `{}`    | no       |
+| `use_incoming_timestamp` | `bool`               | Whether to use the timestamp received from the request.  | `false` | no       |
 
 The `relabel_rules` field can make use of the `rules` export value from a [`loki.relabel`][loki.relabel] component to apply one or more relabeling rules to log entries before they're forwarded to the list of receivers in `forward_to`.
 
@@ -101,21 +103,27 @@ The `relabel_rules` field can make use of the `rules` export value from a [`loki
 
 You can use the following blocks with `loki.source.awsfirehose`:
 
-| Name           | Description                                        | Required |
-|----------------|----------------------------------------------------|----------|
-| [`grpc`][grpc] | Configures the gRPC server that receives requests. | no       |
-| [`http`][http] | Configures the HTTP server that receives requests. | no       |
+{{< docs/alloy-config >}}
+
+| Name                  | Description                                        | Required |
+| --------------------- | -------------------------------------------------- | -------- |
+| [`http`][http]        | Configures the HTTP server that receives requests. | no       |
+| `http` > [`tls`][tls] | Configures TLS for the HTTP server.                | no       |
 
 [http]: #http
-[grpc]: #grpc
+[tls]: #tls
 
-### `grpc`
-
-{{< docs/shared lookup="reference/components/loki-server-grpc.md" source="alloy" version="<ALLOY_VERSION>" >}}
+{{< /docs/alloy-config >}}
 
 ### `http`
 
-{{< docs/shared lookup="reference/components/loki-server-http.md" source="alloy" version="<ALLOY_VERSION>" >}}
+{{< docs/shared lookup="reference/components/server-http.md" source="alloy" version="<ALLOY_VERSION>" >}}
+
+### `tls`
+
+The `tls` block configures TLS for the HTTP and gRPC servers.
+
+{{< docs/shared lookup="reference/components/server-tls-config-block.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
 ## Exported fields
 
@@ -130,14 +138,19 @@ You can use the following blocks with `loki.source.awsfirehose`:
 The following are some of the metrics that are exposed when this component is used.
 
 {{< admonition type="note" >}}
-The metrics include labels  such as `status_code` where relevant, which you can use to measure request success rates.
+The metrics include labels such as `status_code` where relevant, which you can use to measure request success rates.
 {{< /admonition >}}
 
 * `loki_source_awsfirehose_batch_size` (histogram): Size (in units) of the number of records received per request.
+* `loki_source_awsfirehose_inflight_requests` (gauge): Current number of inflight requests.
+* `loki_source_awsfirehose_request_duration_seconds` (histogram): HTTP request handling time, in seconds.
 * `loki_source_awsfirehose_invalid_static_labels_errors` (counter): Count number of errors while processing Data Firehose static labels.
+* `loki_source_awsfirehose_request_message_bytes` (histogram): Request message size, in bytes.
+* `loki_source_awsfirehose_response_message_bytes` (histogram): Response message size, in bytes.
 * `loki_source_awsfirehose_record_errors` (counter): Count of errors while decoding an individual record.
 * `loki_source_awsfirehose_records_received` (counter): Count of records received.
 * `loki_source_awsfirehose_request_errors` (counter): Count of errors while receiving a request.
+* `loki_source_awsfirehose_tcp_connections` (gauge): Current number of accepted TCP connections.
 
 ## Example
 

@@ -5,6 +5,8 @@ aliases:
 description: Learn about discovery.linode
 labels:
   stage: general-availability
+  products:
+    - oss
 title: discovery.linode
 ---
 
@@ -37,31 +39,32 @@ You can use the following arguments with `discovery.linode`:
 | `bearer_token`           | `secret`            | Bearer token to authenticate with.                                                               |         | no       |
 | `enable_http2`           | `bool`              | Whether HTTP2 is supported for requests.                                                         | `true`  | no       |
 | `follow_redirects`       | `bool`              | Whether redirects returned by the server should be followed.                                     | `true`  | no       |
-| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |                      | no       |
+| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |         | no       |
 | `no_proxy`               | `string`            | Comma-separated list of IP addresses, CIDR notations, and domain names to exclude from proxying. |         | no       |
 | `port`                   | `int`               | Port that metrics are scraped from.                                                              | `80`    | no       |
 | `proxy_connect_header`   | `map(list(secret))` | Specifies headers to send to proxies during CONNECT requests.                                    |         | no       |
 | `proxy_from_environment` | `bool`              | Use the proxy URL indicated by environment variables.                                            | `false` | no       |
 | `proxy_url`              | `string`            | HTTP proxy to send requests through.                                                             |         | no       |
 | `refresh_interval`       | `duration`          | The time to wait between polling update requests.                                                | `"60s"` | no       |
-| `region`                 | `string`            | A region to filter on.                                                                           | `""`    | no       |
-| `tag_separator`          | `string`            | The string by which Linode Instance tags are joined into the tag label.                          | `,`     | no       |
+| `region`                 | `string`            | A region to filter on.                                                                           |         | no       |
+| `tag_separator`          | `string`            | The string by which Linode Instance tags are joined into the tag label.                          | `","`   | no       |
 
  At most, one of the following can be provided:
 
-* [`authorization`][authorization] block
-* [`basic_auth`][basic_auth] block
-* [`bearer_token_file`][arguments] argument
-* [`bearer_token`][arguments] argument
-* [`oauth2`][oauth2] block
+* [`authorization`](#authorization) block
+* [`basic_auth`](#basic_auth) block
+* [`bearer_token_file`](#arguments) argument
+* [`bearer_token`](#arguments) argument
+* [`oauth2`](#oauth2) block
 
-[arguments]: #arguments
 
 {{< docs/shared lookup="reference/components/http-client-proxy-config-description.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
 ## Blocks
 
 You can use the following blocks with `discovery.linode`:
+
+{{< docs/alloy-config >}}
 
 | Block                                 | Description                                                | Required |
 | ------------------------------------- | ---------------------------------------------------------- | -------- |
@@ -71,13 +74,12 @@ You can use the following blocks with `discovery.linode`:
 | `oauth2` > [`tls_config`][tls_config] | Configure TLS settings for connecting to the endpoint.     | no       |
 | [`tls_config`][tls_config]            | Configure TLS settings for connecting to the endpoint.     | no       |
 
-The > symbol indicates deeper levels of nesting.
-For example, `oauth2` > `tls_config` refers to a `tls_config` block defined inside an `oauth2` block.
-
 [authorization]: #authorization
 [basic_auth]: #basic_auth
 [oauth2]: #oauth2
 [tls_config]: #tls_config
+
+{{< /docs/alloy-config >}}
 
 ### `authorization`
 

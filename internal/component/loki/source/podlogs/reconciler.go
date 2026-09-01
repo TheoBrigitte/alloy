@@ -3,13 +3,13 @@ package podlogs
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"os"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/go-kit/log"
 	"github.com/grafana/ckit/shard"
 	"github.com/prometheus/common/model"
 	promlabels "github.com/prometheus/prometheus/model/labels"
@@ -17,12 +17,12 @@ import (
 	"github.com/prometheus/prometheus/util/strutil"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/grafana/alloy/internal/component/loki/source/kubernetes/kubetail"
 	monitoringv1alpha2 "github.com/grafana/alloy/internal/component/loki/source/podlogs/internal/apis/monitoring/v1alpha2"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 	"github.com/grafana/alloy/internal/service/cluster"
 )
 
@@ -61,7 +61,7 @@ const (
 // The reconciler reconciles the state of PodLogs on Kubernetes with targets to
 // collect logs from.
 type reconciler struct {
-	log     log.Logger
+	log     *slog.Logger
 	tailer  *kubetail.Manager
 	cluster cluster.Cluster
 
@@ -69,6 +69,10 @@ type reconciler struct {
 	podLogsSelector          labels.Selector
 	podLogsNamespaceSelector labels.Selector
 	shouldDistribute         bool
+	nodeFilterEnabled        bool
+	nodeFilterName           string
+
+	preserveMetaLabels bool
 
 	debugMut  sync.RWMutex
 	debugInfo []DiscoveredPodLogs
@@ -76,7 +80,7 @@ type reconciler struct {
 
 // newReconciler creates a new reconciler which synchronizes targets with the
 // provided tailer whenever Reconcile is called.
-func newReconciler(l log.Logger, tailer *kubetail.Manager, cluster cluster.Cluster) *reconciler {
+func newReconciler(l *slog.Logger, tailer *kubetail.Manager, cluster cluster.Cluster) *reconciler {
 	return &reconciler{
 		log:     l,
 		tailer:  tailer,
@@ -96,12 +100,47 @@ func (r *reconciler) UpdateSelectors(podLogs, namespace labels.Selector) {
 	r.podLogsNamespaceSelector = namespace
 }
 
+// UpdateNodeFilter updates the node filter configuration used by the reconciler.
+func (r *reconciler) UpdateNodeFilter(enabled bool, nodeName string) {
+	r.reconcileMut.Lock()
+	defer r.reconcileMut.Unlock()
+
+	r.nodeFilterEnabled = enabled
+	r.nodeFilterName = nodeName
+}
+
+// getNodeFilterName returns the effective node name to filter by.
+// If enabled but no node name is provided, it falls back to the NODE_NAME environment variable.
+func (r *reconciler) getNodeFilterName() string {
+	r.reconcileMut.RLock()
+	defer r.reconcileMut.RUnlock()
+
+	if !r.nodeFilterEnabled {
+		return ""
+	}
+
+	if r.nodeFilterName != "" {
+		return r.nodeFilterName
+	}
+
+	// Fall back to NODE_NAME environment variable
+	return os.Getenv("NODE_NAME")
+}
+
 // SetDistribute configures whether targets are distributed amongst the cluster.
 func (r *reconciler) SetDistribute(distribute bool) {
 	r.reconcileMut.Lock()
 	defer r.reconcileMut.Unlock()
 
 	r.shouldDistribute = distribute
+}
+
+// UpdatePreserveMetaLabels configures whether to preserve meta labels in targets.
+func (r *reconciler) UpdatePreserveMetaLabels(preserveMetaLabels bool) {
+	r.reconcileMut.Lock()
+	defer r.reconcileMut.Unlock()
+
+	r.preserveMetaLabels = preserveMetaLabels
 }
 
 func (r *reconciler) getShouldDistribute() bool {
@@ -131,7 +170,7 @@ func (r *reconciler) Reconcile(ctx context.Context, cli client.Client) error {
 		// Skip over this podLogs if it doesn't match the namespace selector.
 		podLogsNamespace := corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: podLogs.Namespace}}
 		if err := cli.Get(ctx, client.ObjectKeyFromObject(&podLogsNamespace), &podLogsNamespace); err != nil {
-			level.Error(r.log).Log("msg", "failed to reconcile PodLogs", "operation", "get namespace", "key", key, "err", err)
+			r.log.Error("failed to reconcile PodLogs", "operation", "get namespace", "key", key, "err", err)
 			continue
 		}
 		if !r.podLogsNamespaceSelector.Matches(labels.Set(podLogsNamespace.Labels)) {
@@ -150,7 +189,7 @@ func (r *reconciler) Reconcile(ctx context.Context, cli client.Client) error {
 	}
 
 	if err := r.tailer.SyncTargets(ctx, newTasks); err != nil {
-		level.Error(r.log).Log("msg", "failed to apply new tailers to run", "err", err)
+		r.log.Error("failed to apply new tailers to run", "err", err)
 	}
 
 	r.debugMut.Lock()
@@ -161,14 +200,15 @@ func (r *reconciler) Reconcile(ctx context.Context, cli client.Client) error {
 }
 
 func filterLabels(lbls promlabels.Labels, keysToKeep []string) promlabels.Labels {
-	var res promlabels.Labels
-	for _, k := range lbls {
-		if slices.Contains(keysToKeep, k.Name) {
-			res = append(res, promlabels.Label{Name: k.Name, Value: k.Value})
+	builder := promlabels.NewScratchBuilder(lbls.Len())
+	lbls.Range(func(l promlabels.Label) {
+		if slices.Contains(keysToKeep, l.Name) {
+			builder.Add(l.Name, l.Value)
 		}
-	}
-	sort.Sort(res)
-	return res
+	})
+
+	builder.Sort()
+	return builder.Labels()
 }
 
 func distributeTargets(c cluster.Cluster, targets []*kubetail.Target) []*kubetail.Target {
@@ -217,36 +257,45 @@ func (r *reconciler) reconcilePodLogs(ctx context.Context, cli client.Client, po
 	}
 
 	key := client.ObjectKeyFromObject(podLogs)
-	level.Debug(r.log).Log("msg", "reconciling PodLogs", "key", key)
+	r.log.Debug("reconciling PodLogs", "key", key)
 
 	relabelRules, err := convertRelabelConfig(podLogs.Spec.RelabelConfigs)
 	if err != nil {
 		discoveredPodLogs.ReconcileError = fmt.Sprintf("invalid relabelings: %s", err)
-		level.Error(r.log).Log("msg", "failed to reconcile PodLogs", "operation", "convert relabelings", "key", key, "err", err)
+		r.log.Error("failed to reconcile PodLogs", "operation", "convert relabelings", "key", key, "err", err)
 		return targets, discoveredPodLogs
 	}
 
 	sel, err := metav1.LabelSelectorAsSelector(&podLogs.Spec.Selector)
 	if err != nil {
 		discoveredPodLogs.ReconcileError = fmt.Sprintf("invalid Pod selector: %s", err)
-		level.Error(r.log).Log("msg", "failed to reconcile PodLogs", "operation", "convert selector", "key", key, "err", err)
+		r.log.Error("failed to reconcile PodLogs", "operation", "convert selector", "key", key, "err", err)
 		return targets, discoveredPodLogs
 	}
 
 	opts := []client.ListOption{
 		client.MatchingLabelsSelector{Selector: sel},
 	}
+
+	// Add node filtering if enabled
+	if nodeFilterName := r.getNodeFilterName(); nodeFilterName != "" {
+		r.log.Debug("applying node filter for pod discovery", "node", nodeFilterName, "key", key)
+		opts = append(opts, client.MatchingFieldsSelector{
+			Selector: fields.OneTermEqualSelector("spec.nodeName", nodeFilterName),
+		})
+	}
+
 	var podList corev1.PodList
 	if err := cli.List(ctx, &podList, opts...); err != nil {
 		discoveredPodLogs.ReconcileError = fmt.Sprintf("failed to list Pods: %s", err)
-		level.Error(r.log).Log("msg", "failed to reconcile PodLogs", "operation", "list Pods", "key", key, "err", err)
+		r.log.Error("failed to reconcile PodLogs", "operation", "list Pods", "key", key, "err", err)
 		return targets, discoveredPodLogs
 	}
 
 	namespaceSel, err := metav1.LabelSelectorAsSelector(&podLogs.Spec.NamespaceSelector)
 	if err != nil {
 		discoveredPodLogs.ReconcileError = fmt.Sprintf("invalid Pod namespaceSelector: %s", err)
-		level.Error(r.log).Log("msg", "failed to reconcile PodLogs", "operation", "convert namespaceSelector", "key", key, "err", err)
+		r.log.Error("failed to reconcile PodLogs", "operation", "convert namespaceSelector", "key", key, "err", err)
 		return targets, discoveredPodLogs
 	}
 
@@ -262,14 +311,14 @@ func (r *reconciler) reconcilePodLogs(ctx context.Context, cli client.Client, po
 		// Skip over this pod if it doesn't match the namespace selector.
 		namespace := corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: pod.Namespace}}
 		if err := cli.Get(ctx, client.ObjectKeyFromObject(&namespace), &namespace); err != nil {
-			level.Error(r.log).Log("msg", "failed to reconcile PodLogs", "operation", "get namespace for Pod", "key", key, "err", err)
+			r.log.Error("failed to reconcile PodLogs", "operation", "get namespace for Pod", "key", key, "err", err)
 			continue
 		}
 		if !namespaceSel.Matches(labels.Set(namespace.Labels)) {
 			continue
 		}
 
-		level.Debug(r.log).Log("msg", "found matching Pod", "key", key, "pod", client.ObjectKeyFromObject(&pod))
+		r.log.Debug("found matching Pod", "key", key, "pod", client.ObjectKeyFromObject(&pod))
 
 		// Extract labels and annotations from the Pods object outside of the container loop to spend less time sanitizing labels.
 		podTargetLabels := buildPodsAndNamespacesTargetLabels(podLogsTargetLabels, pod, namespace)
@@ -281,11 +330,21 @@ func (r *reconciler) reconcilePodLogs(ctx context.Context, cli client.Client, po
 				Container:     container,
 				InitContainer: initContainer,
 			}, podTargetLabels)
-			processedLabels, _ := relabel.Process(targetLabels.Copy(), relabelRules...)
+			lb := promlabels.NewBuilder(targetLabels)
+			processedLabels := promlabels.EmptyLabels()
+			if relabel.ProcessBuilder(lb, relabelRules...) {
+				processedLabels = lb.Labels()
+			}
 
 			defaultJob := fmt.Sprintf("%s/%s:%s", podLogs.Namespace, podLogs.Name, container.Name)
-			finalLabels, err := kubetail.PrepareLabels(processedLabels, defaultJob)
 
+			// Check if we should preserve meta labels for downstream components
+			r.reconcileMut.RLock()
+			preserveMetaLabels := r.preserveMetaLabels
+			r.reconcileMut.RUnlock()
+
+			// Use the updated PrepareLabels function with meta label preservation option
+			finalLabels, err := kubetail.PrepareLabelsWithMetaPreservation(processedLabels, defaultJob, preserveMetaLabels)
 			if err != nil {
 				discoveredPod.Containers = append(discoveredPod.Containers, DiscoveredContainer{
 					DiscoveredLabels: targetLabels.Map(),
@@ -295,8 +354,8 @@ func (r *reconciler) reconcilePodLogs(ctx context.Context, cli client.Client, po
 				return
 			}
 
-			target := kubetail.NewTarget(targetLabels.Copy(), finalLabels)
-			if len(processedLabels) != 0 {
+			target := kubetail.NewTarget(targetLabels.Copy(), finalLabels, preserveMetaLabels)
+			if processedLabels.Len() != 0 {
 				targets = append(targets, target)
 			}
 
@@ -329,7 +388,7 @@ func (r *reconciler) DebugInfo() []DiscoveredPodLogs {
 
 // buildPodLogsTargetLabels builds the target labels for a PodLogs object.
 func buildPodLogsTargetLabels(podLogs *monitoringv1alpha2.PodLogs) promlabels.Labels {
-	podLogsTargetLabels := promlabels.NewBuilder(nil)
+	podLogsTargetLabels := promlabels.NewBuilder(promlabels.EmptyLabels())
 	podLogsTargetLabels.Set(kubePodlogsNamespace, podLogs.Namespace)
 	podLogsTargetLabels.Set(kubePodlogsName, podLogs.Name)
 	for key, value := range podLogs.Labels {
@@ -423,7 +482,8 @@ func buildContainerTargetLabels(opts discoveredContainer, prediscoveredLabels pr
 	targetLabels.Set(model.JobLabel, fmt.Sprintf("%s/%s", opts.PodLogs.Namespace, opts.PodLogs.Name))
 
 	res := targetLabels.Labels()
-	sort.Sort(res)
+
+	// label Builder is inherently sorted, so no need to sort here
 	return res
 }
 

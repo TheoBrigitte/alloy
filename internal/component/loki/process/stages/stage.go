@@ -2,111 +2,47 @@ package stages
 
 import (
 	"fmt"
-	"os"
-	"runtime"
+	"log/slog"
 	"time"
 
-	"github.com/go-kit/log"
 	"github.com/grafana/alloy/internal/component/common/loki"
 	"github.com/grafana/alloy/internal/featuregate"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
-	"gopkg.in/yaml.v2"
 )
-
-// TODO(@tpaschalis) Let's use this as the list of stages we need to port over.
-const (
-	StageTypeCRI        = "cri"
-	StageTypeDecolorize = "decolorize"
-	StageTypeDocker     = "docker"
-	StageTypeDrop       = "drop"
-	//TODO(thampiotr): Add support for eventlogmessage stage
-	StageTypeEventLogMessage    = "eventlogmessage"
-	StageTypeGeoIP              = "geoip"
-	StageTypeJSON               = "json"
-	StageTypeLabel              = "labels"
-	StageTypeLabelAllow         = "labelallow"
-	StageTypeLabelDrop          = "labeldrop"
-	StageTypeLimit              = "limit"
-	StageTypeLogfmt             = "logfmt"
-	StageTypeLuhn               = "luhn"
-	StageTypeMatch              = "match"
-	StageTypeMetric             = "metrics"
-	StageTypeMultiline          = "multiline"
-	StageTypeOutput             = "output"
-	StageTypePack               = "pack"
-	StageTypePipeline           = "pipeline"
-	StageTypeRegex              = "regex"
-	StageTypeReplace            = "replace"
-	StageTypeSampling           = "sampling"
-	StageTypeStaticLabels       = "static_labels"
-	StageTypeStructuredMetadata = "structured_metadata"
-	StageTypeTemplate           = "template"
-	StageTypeTenant             = "tenant"
-	StageTypeTimestamp          = "timestamp"
-	StageTypeWindowsEvent       = "windowsevent"
-)
-
-// Add stages that are not GA. Stages that are not specified here are considered GA.
-var stagesUnstable = map[string]featuregate.Stability{
-	StageTypeWindowsEvent: featuregate.StabilityExperimental,
-}
 
 // Processor takes an existing set of labels, timestamp and log entry and returns either a possibly mutated
 // timestamp and log entry
 type Processor interface {
-	Process(labels model.LabelSet, extracted map[string]interface{}, time *time.Time, entry *string)
-	Name() string
+	Process(labels model.LabelSet, extracted map[string]any, time *time.Time, entry *string)
 }
 
 type Entry struct {
-	Extracted map[string]interface{}
+	Extracted map[string]any
 	loki.Entry
 }
 
 // Stage can receive entries via an inbound channel and forward mutated entries to an outbound channel.
 type Stage interface {
-	Name() string
 	Run(chan Entry) chan Entry
 	Cleanup()
 }
 
-func (entry *Entry) copy() *Entry {
-	out, err := yaml.Marshal(entry)
-	if err != nil {
-		return nil
-	}
-
-	var n *Entry
-	err = yaml.Unmarshal(out, &n)
-	if err != nil {
-		return nil
-	}
-
-	return n
+// Stopper is an optional interface for stages that need an out-of-band signal
+// to unblock goroutines during shutdown. Implementations must not block,
+// panic, or assume Run has stopped.
+type Stopper interface {
+	Stop()
 }
 
 // stageProcessor Allow to transform a Processor (old synchronous pipeline stage) into an async Stage
 type stageProcessor struct {
 	Processor
-
-	inspector *inspector
 }
 
 func (s stageProcessor) Run(in chan Entry) chan Entry {
 	return RunWith(in, func(e Entry) Entry {
-		var before *Entry
-
-		if Inspect {
-			before = e.copy()
-		}
-
 		s.Process(e.Labels, e.Extracted, &e.Timestamp, &e.Line)
-
-		if Inspect {
-			s.inspector.inspect(s.Processor.Name(), before, e)
-		}
-
 		return e
 	})
 }
@@ -114,42 +50,33 @@ func (s stageProcessor) Run(in chan Entry) chan Entry {
 func toStage(p Processor) Stage {
 	return &stageProcessor{
 		Processor: p,
-		inspector: newInspector(os.Stderr, runtime.GOOS == "windows"),
 	}
-}
-
-func checkFeatureStability(stageName string, minStability featuregate.Stability) error {
-	blockStability, exist := stagesUnstable[stageName]
-	if exist {
-		return featuregate.CheckAllowed(blockStability, minStability, fmt.Sprintf("stage %q", stageName))
-	}
-	return nil
 }
 
 // New creates a new stage for the given type and configuration.
-func New(logger log.Logger, jobName *string, cfg StageConfig, registerer prometheus.Registerer, minStability featuregate.Stability) (Stage, error) {
+func New(slogger *slog.Logger, cfg StageConfig, registerer prometheus.Registerer, minStability featuregate.Stability) (Stage, error) {
 	var (
 		s   Stage
 		err error
 	)
 	switch {
 	case cfg.DockerConfig != nil:
-		s, err = NewDocker(logger, registerer, minStability)
+		s, err = NewDocker(slogger, registerer, minStability)
 		if err != nil {
 			return nil, err
 		}
 	case cfg.CRIConfig != nil:
-		s, err = NewCRI(logger, *cfg.CRIConfig, registerer, minStability)
+		s, err = NewCRI(slogger, *cfg.CRIConfig, registerer, minStability)
 		if err != nil {
 			return nil, err
 		}
 	case cfg.JSONConfig != nil:
-		s, err = newJSONStage(logger, *cfg.JSONConfig)
+		s, err = newJSONStage(slogger, *cfg.JSONConfig)
 		if err != nil {
 			return nil, err
 		}
 	case cfg.LogfmtConfig != nil:
-		s, err = newLogfmtStage(logger, *cfg.LogfmtConfig)
+		s, err = newLogfmtStage(slogger, *cfg.LogfmtConfig)
 		if err != nil {
 			return nil, err
 		}
@@ -159,72 +86,80 @@ func New(logger log.Logger, jobName *string, cfg StageConfig, registerer prometh
 			return nil, err
 		}
 	case cfg.MetricsConfig != nil:
-		s, err = newMetricStage(logger, *cfg.MetricsConfig, registerer)
+		s, err = newMetricStage(slogger, *cfg.MetricsConfig, registerer)
 		if err != nil {
 			return nil, err
 		}
 	case cfg.LabelsConfig != nil:
-		s, err = newLabelStage(logger, *cfg.LabelsConfig)
+		s, err = newLabelStage(slogger, *cfg.LabelsConfig)
 		if err != nil {
 			return nil, err
 		}
 	case cfg.StructuredMetadata != nil:
-		s, err = newStructuredMetadataStage(logger, *cfg.StructuredMetadata)
+		s, err = newStructuredMetadataStage(slogger, *cfg.StructuredMetadata)
+		if err != nil {
+			return nil, err
+		}
+	case cfg.StructuredMetadataDropConfig != nil:
+		s, err = newStructuredMetadataDropStage(slogger, *cfg.StructuredMetadataDropConfig)
 		if err != nil {
 			return nil, err
 		}
 	case cfg.RegexConfig != nil:
-		s, err = newRegexStage(logger, *cfg.RegexConfig)
+		s, err = newRegexStage(slogger, *cfg.RegexConfig)
 		if err != nil {
 			return nil, err
 		}
 	case cfg.TimestampConfig != nil:
-		s, err = newTimestampStage(logger, *cfg.TimestampConfig)
+		s, err = newTimestampStage(slogger, *cfg.TimestampConfig)
 		if err != nil {
 			return nil, err
 		}
 	case cfg.OutputConfig != nil:
-		s, err = newOutputStage(logger, *cfg.OutputConfig)
+		s, err = newOutputStage(slogger, *cfg.OutputConfig)
 		if err != nil {
 			return nil, err
 		}
 	case cfg.MatchConfig != nil:
-		s, err = newMatcherStage(logger, jobName, *cfg.MatchConfig, registerer, minStability)
+		s, err = newMatcherStage(slogger, *cfg.MatchConfig, registerer, minStability)
 		if err != nil {
 			return nil, err
 		}
 	case cfg.TemplateConfig != nil:
-		s, err = newTemplateStage(logger, *cfg.TemplateConfig)
+		s, err = newTemplateStage(slogger, *cfg.TemplateConfig)
 		if err != nil {
 			return nil, err
 		}
 	case cfg.TenantConfig != nil:
-		s, err = newTenantStage(logger, *cfg.TenantConfig)
+		s, err = newTenantStage(slogger, *cfg.TenantConfig)
 		if err != nil {
 			return nil, err
 		}
 	case cfg.ReplaceConfig != nil:
-		s, err = newReplaceStage(logger, *cfg.ReplaceConfig)
+		s, err = newReplaceStage(slogger, *cfg.ReplaceConfig)
 		if err != nil {
 			return nil, err
 		}
 	case cfg.LimitConfig != nil:
-		s, err = newLimitStage(logger, *cfg.LimitConfig, registerer)
+		s, err = newLimitStage(slogger, *cfg.LimitConfig, registerer)
 		if err != nil {
 			return nil, err
 		}
 	case cfg.DropConfig != nil:
-		s, err = newDropStage(logger, *cfg.DropConfig, registerer)
+		s, err = newDropStage(slogger, *cfg.DropConfig, registerer)
 		if err != nil {
 			return nil, err
 		}
 	case cfg.MultilineConfig != nil:
-		s, err = newMultilineStage(logger, *cfg.MultilineConfig)
+		s, err = newMultilineStage(slogger, *cfg.MultilineConfig)
 		if err != nil {
 			return nil, err
 		}
 	case cfg.PackConfig != nil:
-		s = newPackStage(logger, *cfg.PackConfig, registerer)
+		s, err = newPackStage(slogger, *cfg.PackConfig, registerer)
+		if err != nil {
+			return nil, err
+		}
 	case cfg.LabelAllowConfig != nil:
 		s, err = newLabelAllowStage(*cfg.LabelAllowConfig)
 		if err != nil {
@@ -236,12 +171,12 @@ func New(logger log.Logger, jobName *string, cfg StageConfig, registerer prometh
 			return nil, err
 		}
 	case cfg.StaticLabelsConfig != nil:
-		s, err = newStaticLabelsStage(logger, *cfg.StaticLabelsConfig)
+		s, err = newStaticLabelsStage(*cfg.StaticLabelsConfig)
 		if err != nil {
 			return nil, err
 		}
 	case cfg.GeoIPConfig != nil:
-		s, err = newGeoIPStage(logger, *cfg.GeoIPConfig)
+		s, err = newGeoIPStage(slogger, *cfg.GeoIPConfig)
 		if err != nil {
 			return nil, err
 		}
@@ -251,17 +186,25 @@ func New(logger log.Logger, jobName *string, cfg StageConfig, registerer prometh
 			return nil, err
 		}
 	case cfg.SamplingConfig != nil:
-		s = newSamplingStage(logger, *cfg.SamplingConfig, registerer)
+		s, err = newSamplingStage(slogger, *cfg.SamplingConfig, registerer)
+		if err != nil {
+			return nil, err
+		}
 	case cfg.EventLogMessageConfig != nil:
-		s = newEventLogMessageStage(logger, cfg.EventLogMessageConfig)
+		s = newEventLogMessageStage(slogger, cfg.EventLogMessageConfig)
 	case cfg.WindowsEventConfig != nil:
-		s = newWindowsEventStage(logger, cfg.WindowsEventConfig)
+		s = newWindowsEventStage(slogger, cfg.WindowsEventConfig)
+	case cfg.PatternConfig != nil:
+		s, err = newPatternStage(slogger, *cfg.PatternConfig)
+		if err != nil {
+			return nil, err
+		}
+	case cfg.TruncateConfig != nil:
+		s = newTruncateStage(slogger, *cfg.TruncateConfig, registerer)
+	case cfg.SplitJSONConfig != nil:
+		s = newSplitJSONStage(slogger, *cfg.SplitJSONConfig)
 	default:
 		panic(fmt.Sprintf("unreachable; should have decoded into one of the StageConfig fields: %+v", cfg))
-	}
-
-	if err := checkFeatureStability(s.Name(), minStability); err != nil {
-		return nil, err
 	}
 
 	return s, nil

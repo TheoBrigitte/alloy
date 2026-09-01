@@ -2,10 +2,10 @@ package integrations
 
 import (
 	"fmt"
+	"log/slog"
 	"testing"
 	"time"
 
-	"github.com/go-kit/log"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v2"
 )
@@ -49,11 +49,11 @@ type testIntegrationA struct {
 func (i *testIntegrationA) Name() string                         { return "test" }
 func (i *testIntegrationA) InstanceKey(_ string) (string, error) { return "integrationA", nil }
 
-func (i *testIntegrationA) NewIntegration(l log.Logger) (Integration, error) {
+func (i *testIntegrationA) NewIntegration(_ *slog.Logger) (Integration, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (i *testIntegrationA) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (i *testIntegrationA) UnmarshalYAML(unmarshal func(any) error) error {
 	i.Truth = true
 	type plain testIntegrationA
 	return unmarshal((*plain)(i))
@@ -66,7 +66,7 @@ type testIntegrationB struct {
 func (*testIntegrationB) Name() string                         { return "shouldnotbefound" }
 func (*testIntegrationB) InstanceKey(_ string) (string, error) { return "integrationB", nil }
 
-func (*testIntegrationB) NewIntegration(l log.Logger) (Integration, error) {
+func (*testIntegrationB) NewIntegration(_ *slog.Logger) (Integration, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
@@ -79,7 +79,7 @@ type testFullConfig struct {
 	Configs Configs `yaml:"-"`
 }
 
-func (c *testFullConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (c *testFullConfig) UnmarshalYAML(unmarshal func(any) error) error {
 	// This default value should not change.
 	c.Default = 12345
 

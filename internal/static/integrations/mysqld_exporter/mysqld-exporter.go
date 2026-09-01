@@ -7,22 +7,19 @@ import (
 	"log/slog"
 	"os"
 
-	config_util "github.com/prometheus/common/config"
-
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
 	"github.com/go-sql-driver/mysql"
+	config_util "github.com/prometheus/common/config"
+	"github.com/prometheus/mysqld_exporter/collector"
 
-	"github.com/grafana/alloy/internal/runtime/logging"
 	"github.com/grafana/alloy/internal/static/integrations"
 	integrations_v2 "github.com/grafana/alloy/internal/static/integrations/v2"
 	"github.com/grafana/alloy/internal/static/integrations/v2/metricsutils"
-	"github.com/prometheus/mysqld_exporter/collector"
 )
 
 // DefaultConfig holds the default settings for the mysqld_exporter integration.
 var DefaultConfig = Config{
-	LockWaitTimeout: 2,
+	EnableLockWaitTimeout: true,
+	LockWaitTimeout:       2,
 
 	InfoSchemaProcessListProcessesByUser: true,
 	InfoSchemaProcessListProcessesByHost: true,
@@ -53,28 +50,30 @@ type Config struct {
 	SetCollectors []string `yaml:"set_collectors,omitempty"`
 
 	// Collector-wide options
-	LockWaitTimeout int  `yaml:"lock_wait_timeout,omitempty"`
-	LogSlowFilter   bool `yaml:"log_slow_filter,omitempty"`
+	EnableLockWaitTimeout bool `yaml:"enable_lock_wait_timeout,omitempty"`
+	LockWaitTimeout       int  `yaml:"lock_wait_timeout,omitempty"`
+	LogSlowFilter         bool `yaml:"log_slow_filter,omitempty"`
 
 	// Collector-specific config options
-	InfoSchemaProcessListMinTime         int    `yaml:"info_schema_processlist_min_time,omitempty"`
-	InfoSchemaProcessListProcessesByUser bool   `yaml:"info_schema_processlist_processes_by_user,omitempty"`
-	InfoSchemaProcessListProcessesByHost bool   `yaml:"info_schema_processlist_processes_by_host,omitempty"`
-	InfoSchemaTablesDatabases            string `yaml:"info_schema_tables_databases,omitempty"`
-	PerfSchemaEventsStatementsLimit      int    `yaml:"perf_schema_eventsstatements_limit,omitempty"`
-	PerfSchemaEventsStatementsTimeLimit  int    `yaml:"perf_schema_eventsstatements_time_limit,omitempty"`
-	PerfSchemaEventsStatementsTextLimit  int    `yaml:"perf_schema_eventsstatements_digtext_text_limit,omitempty"`
-	PerfSchemaFileInstancesFilter        string `yaml:"perf_schema_file_instances_filter,omitempty"`
-	PerfSchemaFileInstancesRemovePrefix  string `yaml:"perf_schema_file_instances_remove_prefix,omitempty"`
-	PerfSchemaMemoryEventsRemovePrefix   string `yaml:"perf_schema_memory_events_remove_prefix,omitempty"`
-	HeartbeatDatabase                    string `yaml:"heartbeat_database,omitempty"`
-	HeartbeatTable                       string `yaml:"heartbeat_table,omitempty"`
-	HeartbeatUTC                         bool   `yaml:"heartbeat_utc,omitempty"`
-	MySQLUserPrivileges                  bool   `yaml:"mysql_user_privileges,omitempty"`
+	InfoSchemaProcessListMinTime             int      `yaml:"info_schema_processlist_min_time,omitempty"`
+	InfoSchemaProcessListProcessesByUser     bool     `yaml:"info_schema_processlist_processes_by_user,omitempty"`
+	InfoSchemaProcessListProcessesByHost     bool     `yaml:"info_schema_processlist_processes_by_host,omitempty"`
+	InfoSchemaTablesDatabases                string   `yaml:"info_schema_tables_databases,omitempty"`
+	PerfSchemaEventsStatementsLimit          int      `yaml:"perf_schema_eventsstatements_limit,omitempty"`
+	PerfSchemaEventsStatementsTimeLimit      int      `yaml:"perf_schema_eventsstatements_time_limit,omitempty"`
+	PerfSchemaEventsStatementsTextLimit      int      `yaml:"perf_schema_eventsstatements_digtext_text_limit,omitempty"`
+	PerfSchemaEventsStatementsExcludeSchemas []string `yaml:"perf_schema_eventsstatements_exclude_schemas,omitempty"`
+	PerfSchemaFileInstancesFilter            string   `yaml:"perf_schema_file_instances_filter,omitempty"`
+	PerfSchemaFileInstancesRemovePrefix      string   `yaml:"perf_schema_file_instances_remove_prefix,omitempty"`
+	PerfSchemaMemoryEventsRemovePrefix       string   `yaml:"perf_schema_memory_events_remove_prefix,omitempty"`
+	HeartbeatDatabase                        string   `yaml:"heartbeat_database,omitempty"`
+	HeartbeatTable                           string   `yaml:"heartbeat_table,omitempty"`
+	HeartbeatUTC                             bool     `yaml:"heartbeat_utc,omitempty"`
+	MySQLUserPrivileges                      bool     `yaml:"mysql_user_privileges,omitempty"`
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler for Config.
-func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (c *Config) UnmarshalYAML(unmarshal func(any) error) error {
 	*c = DefaultConfig
 
 	type plain Config
@@ -104,7 +103,7 @@ func (c *Config) InstanceKey(_ string) (string, error) {
 }
 
 // NewIntegration converts this config into an instance of an integration.
-func (c *Config) NewIntegration(l log.Logger) (integrations.Integration, error) {
+func (c *Config) NewIntegration(l *slog.Logger) (integrations.Integration, error) {
 	return New(l, c)
 }
 
@@ -115,7 +114,7 @@ func init() {
 
 // New creates a new mysqld_exporter integration. The integration scrapes
 // metrics from a mysqld process.
-func New(log log.Logger, c *Config) (integrations.Integration, error) {
+func New(log *slog.Logger, c *Config) (integrations.Integration, error) {
 	dsn := c.DataSourceName
 	if len(dsn) == 0 {
 		dsn = config_util.Secret(os.Getenv("MYSQLD_EXPORTER_DATA_SOURCE_NAME"))
@@ -125,15 +124,15 @@ func New(log log.Logger, c *Config) (integrations.Integration, error) {
 	}
 
 	scrapers := GetScrapers(c)
-	logger := slog.New(logging.NewSlogGoKitHandler(log))
-	exporter := collector.New(context.Background(), string(dsn), scrapers, logger, collector.Config{
-		LockTimeout:   c.LockWaitTimeout,
-		SlowLogFilter: c.LogSlowFilter,
-	})
+	exporter := collector.New(context.Background(), string(dsn), scrapers, log,
+		collector.EnableLockWaitTimeout(c.EnableLockWaitTimeout),
+		collector.SetLockWaitTimeout(c.LockWaitTimeout),
+		collector.SetSlowLogFilter(c.LogSlowFilter),
+	)
 
-	level.Debug(log).Log("msg", "enabled mysqld_exporter scrapers")
+	log.Debug("enabled mysqld_exporter scrapers")
 	for _, scraper := range scrapers {
-		level.Debug(log).Log("scraper", scraper.Name())
+		log.Debug("scraper", "name", scraper.Name())
 	}
 
 	return integrations.NewCollectorIntegration(
@@ -187,6 +186,7 @@ func GetScrapers(c *Config) []collector.Scraper {
 			Limit:           c.PerfSchemaEventsStatementsLimit,
 			TimeLimit:       c.PerfSchemaEventsStatementsTimeLimit,
 			DigestTextLimit: c.PerfSchemaEventsStatementsTextLimit,
+			ExcludeSchemas:  c.PerfSchemaEventsStatementsExcludeSchemas,
 		}: false,
 
 		&collector.ScrapePerfFileInstances{

@@ -5,6 +5,8 @@ aliases:
 description: Learn about prometheus.exporter.blackbox
 labels:
   stage: general-availability
+  products:
+    - oss
 title: prometheus.exporter.blackbox
 ---
 
@@ -54,7 +56,7 @@ The `config` argument must be a YAML document as string defining which `blackbox
 
 The `timeout` attribute in `config` or `config_file` has an effective upper limit of 10 seconds. Refer to the Prometheus blackbox exporter [issue 751](https://github.com/prometheus/blackbox_exporter/issues/751) for more information.
 
-You can't use both the `targets` argument and the [target][] block in the same configuration file.
+You can't use both the `targets` argument and the [target](#target) block in the same configuration file.
 The `targets` argument must be used when blackbox targets can't be passed as a target block because another component supplies them.
 
 You can set the following labels to a target:
@@ -71,11 +73,15 @@ Refer to [`blackbox_exporter`](https://github.com/prometheus/blackbox_exporter/b
 
 You can use the following block with `prometheus.exporter.blackbox`:
 
+{{< docs/alloy-config >}}
+
 | Name               | Description                   | Required |
 | ------------------ | ----------------------------- | -------- |
 | [`target`][target] | Configures a blackbox target. | no       |
 
 [target]: #target
+
+{{< /docs/alloy-config >}}
 
 ### `target`
 

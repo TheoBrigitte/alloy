@@ -5,6 +5,8 @@ aliases:
 description: Learn about loki.process
 labels:
   stage: general-availability
+  products:
+    - oss
 title: loki.process
 ---
 
@@ -43,37 +45,41 @@ You can use the following argument with `loki.process`:
 
 You can use the following blocks with `loki.process`:
 
-| Block                                                    | Description                                                    | Required |
-| -------------------------------------------------------- | -------------------------------------------------------------- | -------- |
-| [`stage.cri`][stage.cri]                                 | Configures a pre-defined CRI-format pipeline.                  | no       |
-| [`stage.decolorize`][stage.decolorize]                   | Strips ANSI color codes from log lines.                        | no       |
-| [`stage.docker`][stage.docker]                           | Configures a pre-defined Docker log format pipeline.           | no       |
-| [`stage.drop`][stage.drop]                               | Configures a `drop` processing stage.                          | no       |
-| [`stage.eventlogmessage`][stage.eventlogmessage]         | Extracts data from the Message field in the Windows Event Log. | no       |
-| [`stage.geoip`][stage.geoip]                             | Configures a `geoip` processing stage.                         | no       |
-| [`stage.json`][stage.json]                               | Configures a JSON processing stage.                            | no       |
-| [`stage.label_drop`][stage.label_drop]                   | Configures a `label_drop` processing stage.                    | no       |
-| [`stage.label_keep`][stage.label_keep]                   | Configures a `label_keep` processing stage.                    | no       |
-| [`stage.labels`][stage.labels]                           | Configures a `labels` processing stage.                        | no       |
-| [`stage.limit`][stage.limit]                             | Configures a `limit` processing stage.                         | no       |
-| [`stage.logfmt`][stage.logfmt]                           | Configures a `logfmt` processing stage.                        | no       |
-| [`stage.luhn`][stage.luhn]                               | Configures a `luhn` processing stage.                          | no       |
-| [`stage.match`][stage.match]                             | Configures a `match` processing stage.                         | no       |
-| [`stage.metrics`][stage.metrics]                         | Configures a `metrics` stage.                                  | no       |
-| [`stage.multiline`][stage.multiline]                     | Configures a `multiline` processing stage.                     | no       |
-| [`stage.output`][stage.output]                           | Configures an `output` processing stage.                       | no       |
-| [`stage.pack`][stage.pack]                               | Configures a `pack` processing stage.                          | no       |
-| [`stage.regex`][stage.regex]                             | Configures a `regex` processing stage.                         | no       |
-| [`stage.replace`][stage.replace]                         | Configures a `replace` processing stage.                       | no       |
-| [`stage.sampling`][stage.sampling]                       | Samples logs at a given rate.                                  | no       |
-| [`stage.static_labels`][stage.static_labels]             | Configures a `static_labels` processing stage.                 | no       |
-| [`stage.structured_metadata`][stage.structured_metadata] | Configures a structured metadata processing stage.             | no       |
-| [`stage.template`][stage.template]                       | Configures a `template` processing stage.                      | no       |
-| [`stage.tenant`][stage.tenant]                           | Configures a `tenant` processing stage.                        | no       |
-| [`stage.timestamp`][stage.timestamp]                     | Configures a `timestamp` processing stage.                     | no       |
-| [`stage.windowsevent`][stage.windowsevent]               | Configures a `windowsevent` processing stage.                  | no       |
+{{< docs/alloy-config >}}
 
-You can provide any number of these stage blocks nested inside `loki.process`. These blocks run in order of appearance in the configuration file.
+| Block                                                              | Description                                                    | Required |
+|--------------------------------------------------------------------|----------------------------------------------------------------|----------|
+| [`stage.cri`][stage.cri]                                           | Configures a pre-defined CRI-format pipeline.                  | no       |
+| [`stage.decolorize`][stage.decolorize]                             | Strips ANSI color codes from log lines.                        | no       |
+| [`stage.docker`][stage.docker]                                     | Configures a pre-defined Docker log format pipeline.           | no       |
+| [`stage.drop`][stage.drop]                                         | Configures a `drop` processing stage.                          | no       |
+| [`stage.eventlogmessage`][stage.eventlogmessage]                   | Extracts data from the Message field in the Windows Event Log. | no       |
+| [`stage.geoip`][stage.geoip]                                       | Configures a `geoip` processing stage.                         | no       |
+| [`stage.json`][stage.json]                                         | Configures a JSON processing stage.                            | no       |
+| [`stage.label_drop`][stage.label_drop]                             | Configures a `label_drop` processing stage.                    | no       |
+| [`stage.label_keep`][stage.label_keep]                             | Configures a `label_keep` processing stage.                    | no       |
+| [`stage.labels`][stage.labels]                                     | Configures a `labels` processing stage.                        | no       |
+| [`stage.limit`][stage.limit]                                       | Configures a `limit` processing stage.                         | no       |
+| [`stage.logfmt`][stage.logfmt]                                     | Configures a `logfmt` processing stage.                        | no       |
+| [`stage.luhn`][stage.luhn]                                         | Configures a `luhn` processing stage.                          | no       |
+| [`stage.match`][stage.match]                                       | Configures a `match` processing stage.                         | no       |
+| [`stage.metrics`][stage.metrics]                                   | Configures a `metrics` stage.                                  | no       |
+| [`stage.multiline`][stage.multiline]                               | Configures a `multiline` processing stage.                     | no       |
+| [`stage.output`][stage.output]                                     | Configures an `output` processing stage.                       | no       |
+| [`stage.pack`][stage.pack]                                         | Configures a `pack` processing stage.                          | no       |
+| [`stage.pattern`][stage.pattern]                                   | Configures a `pattern` processing stage.                       | no       |
+| [`stage.regex`][stage.regex]                                       | Configures a `regex` processing stage.                         | no       |
+| [`stage.replace`][stage.replace]                                   | Configures a `replace` processing stage.                       | no       |
+| [`stage.sampling`][stage.sampling]                                 | Configures a `sampling` processing stage.                      | no       |
+| [`stage.split_json`][stage.split_json]                             | Configures a `split_json` processing stage.                    | no       |
+| [`stage.static_labels`][stage.static_labels]                       | Configures a `static_labels` processing stage.                 | no       |
+| [`stage.structured_metadata`][stage.structured_metadata]           | Configures a structured metadata processing stage.             | no       |
+| [`stage.structured_metadata_drop`][stage.structured_metadata_drop] | Configures a `structured_metadata_drop` processing stage.      | no       |
+| [`stage.template`][stage.template]                                 | Configures a `template` processing stage.                      | no       |
+| [`stage.tenant`][stage.tenant]                                     | Configures a `tenant` processing stage.                        | no       |
+| [`stage.timestamp`][stage.timestamp]                               | Configures a `timestamp` processing stage.                     | no       |
+| [`stage.truncate`][stage.truncate]                                 | Configures a `truncate` processing stage.                      | no       |
+| [`stage.windowsevent`][stage.windowsevent]                         | Configures a `windowsevent` processing stage.                  | no       |
 
 [stage.cri]: #stagecri
 [stage.decolorize]: #stagedecolorize
@@ -93,15 +99,23 @@ You can provide any number of these stage blocks nested inside `loki.process`. T
 [stage.multiline]: #stagemultiline
 [stage.output]: #stageoutput
 [stage.pack]: #stagepack
+[stage.pattern]: #stagepattern
 [stage.regex]: #stageregex
 [stage.replace]: #stagereplace
 [stage.sampling]: #stagesampling
+[stage.split_json]: #stagesplit_json
 [stage.static_labels]: #stagestatic_labels
 [stage.structured_metadata]: #stagestructured_metadata
+[stage.structured_metadata_drop]: #stagestructured_metadata_drop
 [stage.template]: #stagetemplate
 [stage.tenant]: #stagetenant
+[stage.truncate]: #stagetruncate
 [stage.timestamp]: #stagetimestamp
 [stage.windowsevent]: #stagewindowsevent
+
+{{< /docs/alloy-config >}}
+
+You can provide any number of these stage blocks nested inside `loki.process`. These blocks run in order of appearance in the configuration file.
 
 ### `stage.cri`
 
@@ -135,7 +149,7 @@ Given the following log line, the subsequent key-value pairs are created in the 
 
 content: message
 stream: stdout
-timestamp: 2019-04-30T02:12:41.8443515
+time: 2019-04-30T02:12:41.8443515
 ```
 
 ### `stage.decolorize`
@@ -176,6 +190,31 @@ Docker log entries are formatted as JSON with the following keys:
 * `log`: The content of log line.
 * `stream`: Either `stdout` or `stderr`.
 * `time`: The timestamp string of the log line.
+* `attrs` (optional): Extra attributes from the logging driver, for example when the json-file `tag` option is set.
+
+`stage.docker` only unpacks `log`, `stream`, and `time`.
+It rewrites the log line to the value of `log` and sets the stream label and timestamp.
+Any other top-level JSON fields, including `attrs`, are dropped unless you copy them out first.
+
+If you need values from `attrs` or another sidecar field **and** the docker stage, for example to reassemble split lines, extract those fields with `stage.json` **before** `stage.docker`:
+
+```alloy
+// docker compose json-file tag example: tag = "{{.ImageName}}|{{.Name}}|..."
+stage.json {
+  expressions = {
+    attrs = "",
+  }
+}
+
+stage.docker {}
+
+stage.json {
+  expressions = {
+    tag = "",
+  }
+  source = "attrs"
+}
+```
 
 Given the following log line, the subsequent key-value pairs are created in the shared map of extracted data:
 
@@ -249,17 +288,17 @@ stage.drop {
 
 ### `stage.eventlogmessage`
 
-Deprecated in favor of the [`stage.windowsevent`][stage.windowsevent] block.
+Deprecated in favor of the [`stage.windowsevent`](#stagewindowsevent) block.
 
 The `eventlogmessage` stage extracts data from the Message string that appears in the Windows Event Log.
 
 The following arguments are supported:
 
-| Name                  | Type     | Description                                           | Default   | Required |
-| --------------------- | -------- | ----------------------------------------------------- | --------- | -------- |
-| `drop_invalid_labels` | `bool`   | Whether to drop fields that aren't valid label names. | `false`   | no       |
-| `overwrite_existing`  | `bool`   | Whether to overwrite existing extracted data fields.  | `false`   | no       |
-| `source`              | `string` | Name of the field in the extracted data to parse.     | `message` | no       |
+| Name                  | Type     | Description                                           | Default     | Required |
+| --------------------- | -------- | ----------------------------------------------------- | ----------- | -------- |
+| `drop_invalid_labels` | `bool`   | Whether to drop fields that aren't valid label names. | `false`     | no       |
+| `overwrite_existing`  | `bool`   | Whether to overwrite existing extracted data fields.  | `false`     | no       |
+| `source`              | `string` | Name of the field in the extracted data to parse.     | `"message"` | no       |
 
 When `drop_invalid_labels` is set to `true`, the stage drops fields that aren't valid label names.
 If set to `false`, the stage automatically converts them into valid labels replacing invalid characters with underscores.
@@ -482,18 +521,21 @@ Then the extracted `ip` value is given as source to `geoip` stage. The `geoip` s
 
 The `stage.json` inner block configures a JSON processing stage that parses incoming log lines or previously extracted values as JSON and uses [JMESPath expressions][] to extract new values from them.
 
-[JMESPath expressions]: https://jmespath.org/tutorial.html
+[JMESPath expressions]: https://jmespath.site/main/#tutorial
 
 The following arguments are supported:
 
 | Name             | Type          | Description                                           | Default | Required |
 | ---------------- | ------------- | ----------------------------------------------------- | ------- | -------- |
-| `expressions`    | `map(string)` | Key-value pairs of JMESPath expressions.              |         | yes      |
+| `expressions`    | `map(string)` | Key-value pairs of JMESPath expressions.              |         | no       |
+| `regex`          | `string`      | Regular expression matched against JSON keys.         |         | no       |
 | `drop_malformed` | `bool`        | Drop lines whose input can't be parsed as valid JSON. | `false` | no       |
 | `source`         | `string`      | Source of the data to parse as JSON.                  | `""`    | no       |
 
 The `expressions` field is the set of key-value pairs of JMESPath expressions to run.
-The map key defines the name with which the data is extracted, while the map value is the expression used to populate the value.
+The map key defines the name used to extract the data, while the map value is the expression used to populate the value.
+
+The `regex` field is a regular expression. All keys in the JSON source matching the regular expression are extracted.
 
 When configuring a JSON stage, the `source` field defines the source of data to parse as JSON.
 By default, this is the log line itself, but it can also be a previously extracted value.
@@ -574,13 +616,16 @@ stage.label_keep {
 
 ### `stage.labels`
 
-The `stage.labels` inner block configures a labels processing stage that can read data from the extracted values map and set new labels on incoming log entries.
+The `stage.labels` inner block configures a labels processing stage that can read data from the extracted values map or structured metadata and set new labels on incoming log entries.
+
+For labels that are static, refer to [`stage.static_labels`](#stagestatic_labels)
 
 The following arguments are supported:
 
-| Name     | Type          | Description                             | Default | Required |
-| -------- | ------------- | --------------------------------------- | ------- | -------- |
-| `values` | `map(string)` | Configures a `labels` processing stage. | `{}`    | no       |
+| Name          | Type          | Description                                                                                              | Default       | Required |
+| ------------- | ------------- | -------------------------------------------------------------------------------------------------------- | ------------- | -------- |
+| `values`      | `map(string)` | Configures a `labels` processing stage.                                                                  | `{}`          | no       |
+| `source_type` | `string`      | Where to retrieve the data from.  Allowed values are `"extracted"` (default) or `"structured_metadata"`. | `"extracted"` | no       |
 
 In a labels stage, the map's keys define the label to set and the values are how to look them up.
 If the value is empty, it's inferred to be the same as the key.
@@ -591,6 +636,21 @@ stage.labels {
       env  = "",         // Sets up an 'env' label, based on the 'env' extracted value.
       user = "username", // Sets up a 'user' label, based on the 'username' extracted value.
     }
+}
+```
+
+```alloy
+stage.labels {
+    source_type = "structured_metadata"
+    values      = {
+      env  = "",         // Sets up an 'env' label, based on the 'env' structured metadata value.
+      user = "username", // Sets up a 'user' label, based on the 'username' structured metadata value.
+    }
+}
+
+// Drop the converted structured metadata
+stage.structured_metadata_drop {
+    values = [ "env", "username" ]
 }
 ```
 
@@ -643,19 +703,19 @@ The `stage.logfmt` inner block configures a processing stage that reads incoming
 
 The following arguments are supported:
 
-| Name      | Type          | Description                                    | Default | Required |
-| --------- | ------------- | ---------------------------------------------- | ------- | -------- |
-| `mapping` | `map(string)` | Key-value pairs of `logmft` fields to extract. |         | yes      |
-| `source`  | `string`      | Source of the data to parse as `logfmt`.       | `""`    | no       |
+| Name      | Type          | Description                                     | Default | Required |
+| --------- | ------------- | ----------------------------------------------- | ------- | -------- |
+| `mapping` | `map(string)` | Key-value pairs of `logmft` fields to extract.  |         | no       |
+| `regex`   | `string`      | Regular expression matched against logfmt keys. |         | no       |
+| `source`  | `string`      | Source of the data to parse as `logfmt`.        | `""`    | no       |
+
+The `mapping` field is the set of key-value pairs.
+The map key defines the name used to extract the data, while the map value is the logfmt field used to populate the value.
+
+The `regex` field is a regular expression. All logfmt fields matching the regular expression are extracted.
 
 The `source` field defines the source of data to parse as `logfmt`.
 When `source` is missing or empty, the stage parses the log line itself, but it can also be used to parse a previously extracted value.
-
-This stage uses the [go-logfmt][] unmarshaler, so that numeric or boolean types are unmarshalled into their correct form.
-The stage doesn't perform any other type conversions.
-If the extracted value is a complex type, it's treated as a string.
-
-[go-logfmt]: https://github.com/go-logfmt/logfmt
 
 The following log line and stages demonstrates how this works.
 
@@ -687,19 +747,28 @@ Many Payment Card Industry environments require these numbers to be redacted.
 
 The following arguments are supported:
 
-| Name          | Type     | Description                                    | Default          | Required |
-| ------------- | -------- | ---------------------------------------------- | ---------------- | -------- |
-| `min_length`  | `int`    | Minimum length of digits to consider           | `13`             | no       |
-| `replacement` | `string` | String to substitute the matched patterns with | `"**REDACTED**"` | no       |
-| `source`      | `string` | Source of the data to parse.                   | `""`             | no       |
+| Name          | Type     | Description                                                                  | Default          | Required |
+| ------------- | -------- | ---------------------------------------------------------------------------- | ---------------- | -------- |
+| `delimiters`  | `string` | A list containing delimiters to accept as part of the number.                | `""`             | no       |
+| `min_length`  | `int`    | Minimum length of digits to consider                                         | `13`             | no       |
+| `replacement` | `string` | String to substitute the matched patterns with.                              | `"**REDACTED**"` | no       |
+| `skip_regex`  | `string` | A regular expression identifying substrings to exclude from Luhn evaluation. | `""`             | no       |
+| `source`      | `string` | Source of the data to parse.                                                 | `""`             | no       |
 
 The `source` field defines the source of data to search.
 When `source` is missing or empty, the stage parses the log line itself, but it can also be used to parse a previously extracted value.
 
+If you want the Luhn algorithm to identify numbers with delimiters, for example `4242-4242-4242-4242`, you can configure the `delimiters` field with the expected delimiters.
+
+When `skip_regex` is set to a non-empty regular expression, any substring matching it is excluded from Luhn evaluation.
+This is useful when log lines contain values, such as UUIDs, whose digit groups happen to pass the Luhn check, which would otherwise cause them to be incorrectly redacted.
+
+#### Example
+
 The following example log line contains an approved credit card number.
 
 ```alloy
-time=2012-11-01T22:08:41+00:00 app=loki level=WARN duration=125 message="credit card approved 4032032513548443" extra="user=example_name"
+time=2012-11-01T22:08:41+00:00 app=loki level=WARN duration=125 message="credit card approved 4242424242424242" extra="user=example_name"
 
 stage.luhn {
     replacement = "**DELETED**"
@@ -710,6 +779,46 @@ The stage parses the log line, redacts the credit card number, and produces the 
 
 ```text
 time=2012-11-01T22:08:41+00:00 app=loki level=INFO duration=125 message="credit card approved **DELETED**" extra="user=example_name"
+```
+
+#### Example with `delimiters`
+
+The following example log line contains an approved credit card number, represented with dash characters between each group of four digits.
+
+```alloy
+time=2012-11-01T22:08:41+00:00 app=loki level=WARN duration=125 message="credit card approved 4242-4242-4242-4242" extra="user=example_name"
+
+stage.luhn {
+    replacement = "**DELETED**"
+    delimiters = "-"
+}
+```
+
+The stage parses the log line, redacts the credit card number, and produces the following updated log line:
+
+```text
+time=2012-11-01T22:08:41+00:00 app=loki level=INFO duration=125 message="credit card approved **DELETED**" extra="user=example_name"
+```
+
+#### Example with `skip_regex`
+
+The following example log line contains both a credit card number and a session UUID whose last segment (`424242424242`) is itself a 12-digit Luhn-valid number.
+Without `skip_regex`, the stage would incorrectly redact part of the UUID.
+
+```alloy
+time=2012-11-01T22:08:41+00:00 app=loki level=WARN duration=125 message="credit card approved 4242424242424242" session="a3f1b2e4-c5d6-7e8f-4242-424242424242"
+
+stage.luhn {
+    replacement = "**DELETED**"
+    min_length  = 12
+    skip_regex  = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+}
+```
+
+The stage redacts the credit card number but leaves the UUID intact:
+
+```text
+time=2012-11-01T22:08:41+00:00 app=loki level=INFO duration=125 message="credit card approved **DELETED**" session="a3f1b2e4-c5d6-7e8f-4242-424242424242"
 ```
 
 ### `stage.match`
@@ -751,7 +860,7 @@ stage.labels {
 }
 
 stage.match {
-    selector = "{applbl=\"examplelabel\"}"
+    selector = "{applbl=\"example1\"}"
 
     stage.json {
         expressions = { "msg" = "message" }
@@ -766,7 +875,7 @@ stage.match {
 }
 
 stage.match {
-    selector = "{applbl=\"bar\"} |~ \".*noisy error.*\""
+    selector = "{applbl=\"example2\"} |~ \".*noisy error.*\""
     action   = "drop"
 
     drop_counter_reason = "discard_noisy_errors"
@@ -779,7 +888,7 @@ stage.output {
 
 The first two stages parse the log lines as JSON, decode the `app` value into the shared extracted map as `appname`, and use its value as the `applbl` label.
 
-The third stage uses the LogQL selector to only execute the nested stages on lines where the `applbl="examplelabel"`.
+The third stage uses the LogQL selector to only execute the nested stages on lines where the `applbl="example1"`.
 So, for the first line, the nested JSON stage adds `msg="app1 log line"` into the extracted map.
 
 The fourth stage uses the LogQL selector to only execute on lines where `applbl="qux"`. This means it won't match any of the input, and the nested JSON stage doesn't run.
@@ -864,7 +973,7 @@ The following arguments are supported:
 
 | Name                | Type          | Description                                                                         | Default                  | Required |
 | ------------------- | ------------- | ----------------------------------------------------------------------------------- | ------------------------ | -------- |
-| `buckets`           | `list(float)` | Predefined buckets                                                                    |                          | yes      |
+| `buckets`           | `list(float)` | Predefined buckets                                                                  |                          | yes      |
 | `name`              | `string`      | The metric name.                                                                    |                          | yes      |
 | `description`       | `string`      | The metric's description and help text.                                             | `""`                     | no       |
 | `max_idle_duration` | `duration`    | Maximum amount of time to wait until the metric is marked as 'stale' and removed.   | `"5m"`                   | no       |
@@ -893,7 +1002,45 @@ The supported values are the following:
   * `true` is converted to `1`.
   * `false` is converted to `0`.
 
-The following pipeline creates a counter which increments every time any log line is received by using the `match_all` parameter.
+#### Metric labels
+
+`metric.counter`, `metric.gauge`, and `metric.histogram` blocks don't have a `labels` argument.
+Metric labels are inherited from the log entry label set at the point where `stage.metrics` runs.
+To control metric labels, set labels in earlier stages such as [`stage.labels`](#stagelabels), [`stage.static_labels`](#stagestatic_labels), or [`stage.tenant`](#stagetenant).
+
+If an inherited label name isn't valid for Prometheus, that label is silently dropped and the metric is still exported.
+If no labels are present on the entry, the metric is exported without labels.
+
+The following example adds a static `app` label before `stage.metrics`.
+The generated metric includes the inherited label:
+
+```alloy
+stage.static_labels {
+    values = {
+        app = "payments",
+    }
+}
+
+stage.metrics {
+    metric.counter {
+        name        = "log_lines_total"
+        description = "total number of log lines"
+        match_all   = true
+        action      = "inc"
+    }
+}
+```
+
+If one log line passes through this pipeline, the exposed metric looks like this:
+
+```text
+# HELP loki_process_custom_log_lines_total total number of log lines
+# TYPE loki_process_custom_log_lines_total counter
+loki_process_custom_log_lines_total{app="payments"} 1
+```
+
+This example shows where metric labels come from.
+The following pipeline builds on that behavior to track stream volume by counting total lines with `match_all`.
 The pipeline creates a second counter which adds the byte size of these log lines by using the `count_entry_bytes` parameter.
 
 These two metrics disappear after 24 hours if no new entries are received, to avoid building up metrics which no longer serve any use.
@@ -988,11 +1135,12 @@ The `stage.multiline` inner block merges multiple lines into a single block befo
 
 The following arguments are supported:
 
-| Name            | Type       | Description                                        | Default | Required |
-| --------------- | ---------- | -------------------------------------------------- | ------- | -------- |
-| `firstline`     | `string`   | Name from extracted data to use for the log entry. |         | yes      |
-| `max_lines`     | `number`   | The maximum number of lines a block can have.      | `128`   | no       |
-| `max_wait_time` | `duration` | The maximum time to wait for a multiline block.    | `"3s"`  | no       |
+| Name            | Type       | Description                                                 | Default | Required |
+|-----------------|------------|-------------------------------------------------------------|---------|----------|
+| `firstline`     | `string`   | Name from extracted data to use for the log entry.          |         | yes      |
+| `max_lines`     | `number`   | The maximum number of lines a block can have.               | `128`   | no       |
+| `max_wait_time` | `duration` | The maximum time to wait for a multiline block.             | `"3s"`  | no       |
+| `trim_newlines` | `bool`     | Whether to trim newlines from the end of each merged entry. | `true`  | no       |
 
 A new block is identified by the RE2 regular expression passed in `firstline`.
 
@@ -1119,16 +1267,120 @@ At query time, the Loki [`unpack` parser][unpack parser] can be used to access t
 
 When combining several log streams to use with the `pack` stage, you can set `ingest_timestamp` to true to avoid interlaced timestamps and out-of-order ingestion issues.
 
+### `stage.pattern`
+
+The `stage.pattern` inner block configures a processing stage that parses log lines using
+[LogQL pattern][logql pattern] expressions and uses named captures to add data into the shared extracted map of values.
+
+The following arguments are supported:
+
+| Name                 | Type     | Description                                                            | Default | Required |
+| -------------------- | -------- | ---------------------------------------------------------------------- | ------- | -------- |
+| `pattern`            | `string` | A valid LogQL pattern expression. At least one capture must be named.  |         | yes      |
+| `source`             | `string` | Name from extracted data to parse. If empty, uses the log message.     | `""`    | no       |
+| `labels_from_groups` | `bool`   | Whether to automatically add named capture groups as labels.           | `false` | no       |
+
+The `pattern` field needs to be a [LogQL pattern][logql pattern] expression.
+Every matched capture is added to the extracted map.
+The name of the capture is used as the key in the extracted map for the matched value.
+
+When `labels_from_groups` is set to true, any named captures from the pattern expression are automatically added as labels in addition to being added to the extracted map.
+If a capture group name matches an existing label name, the existing label's value will be overridden by the extracted value.
+
+If the `source` is empty or missing, then the stage parses the log line itself.
+If the `source` set, the stage parses a previously extracted value with the same name.
+
+Given the following log line and pattern stage, the extracted values are shown below:
+
+```alloy
+2019-01-01T01:00:00.000000001Z stderr P i'm a log message!
+
+stage.pattern {
+    pattern = "<time> <stream> <flags> <content>"
+}
+
+time: 2019-01-01T01:00:00.000000001Z,
+stream: stderr,
+flags: P,
+content: i'm a log message
+```
+
+If the `source` value is set, then the pattern expression is applied to the value stored in the shared map under that name.
+
+The following log line is put through this two-stage pipeline:
+
+```alloy
+{"timestamp":"2022-01-01T01:00:00.000000001Z"}
+
+stage.json {
+    expressions = { time = "timestamp" }
+}
+stage.pattern {
+    pattern = "<year>-<month>-<day>T<hour>:<minute>:<second>.<nano>Z"
+    source  = "time"
+}
+```
+
+The first stage adds the following key-value pair into the extracted map:
+
+```text
+time: 2022-01-01T01:00:00.000000001Z
+```
+
+Then, the pattern stage parses the value for time from the shared values and appends the subsequent key-value pair back into the extracted values map:
+
+```text
+time: 2022-01-01T01:00:00.000000001Z
+year: 2022
+month: 01
+day: 01
+hour: 01
+minute: 00
+second: 00
+nano: 000000001
+```
+
+The following example demonstrates how `labels_from_groups` can automatically add the matched groups as labels:
+
+```alloy
+{"timestamp":"2022-01-01T01:00:00.000000001Z"}
+
+stage.json {
+    expressions = { time = "timestamp" }
+}
+stage.pattern {
+    pattern            = "<year>-<month>-<day>T<hour>:<minute>:<second>.<nano>Z"
+    source             = "time"
+    labels_from_groups = true   // Sets up a label for each field parsed from the pattern
+}
+```
+
+This pipeline produces the same extracted values as before in addition to adding labels to the entry:
+
+```text
+time: 2022-01-01T01:00:00.000000001Z
+year: 2022
+month: 01
+day: 01
+hour: 01
+minute: 00
+second: 00
+nano: 000000001
+```
+
+[logql pattern]: https://grafana.com/docs/loki/latest/query/log_queries/#pattern
+
 ### `stage.regex`
 
 The `stage.regex` inner block configures a processing stage that parses log lines using regular expressions and uses named capture groups for adding data into the shared extracted map of values.
 
 The following arguments are supported:
 
-| Name         | Type     | Description                                                        | Default | Required |
-| ------------ | -------- | ------------------------------------------------------------------ | ------- | -------- |
-| `expression` | `string` | A valid RE2 regular expression. Each capture group must be named.  |         | yes      |
-| `source`     | `string` | Name from extracted data to parse. If empty, uses the log message. | `""`    | no       |
+| Name                 | Type     | Description                                                        | Default | Required |
+| -------------------- | -------- | ------------------------------------------------------------------ | ------- | -------- |
+| `expression`         | `string` | A valid RE2 regular expression. Each capture group must be named.  |         | yes      |
+| `source`             | `string` | Name from extracted data to parse. If empty, uses the log message. | `""`    | no       |
+| `labels_from_groups` | `bool`   | Whether to automatically add named capture groups as labels.       | `false` | no       |
 
 The `expression` field needs to be a RE2 regular expression string.
 Every matched capture group is added to the extracted map, so it must be named like: `(?P<name>re)`.
@@ -1136,8 +1388,11 @@ The name of the capture group is then used as the key in the extracted map for t
 
 Because of how {{< param "PRODUCT_NAME" >}} syntax strings work, any backslashes in `expression` must be escaped with a double backslash, for example, `"\\w"` or `"\\S+"`.
 
+When `labels_from_groups` is set to true, any named capture groups from the regex expression are automatically added as labels in addition to being added to the extracted map.
+If a capture group name matches an existing label name, the existing label's value will be overridden by the extracted value.
+
 If the `source` is empty or missing, then the stage parses the log line itself.
-If it's set, the stage parses a previously extracted value with the same name.
+If the `source` is set, the stage parses a previously extracted value with the same name.
 
 Given the following log line and regular expression stage, the extracted values are shown below:
 
@@ -1154,7 +1409,7 @@ flags: P,
 content: i'm a log message
 ```
 
-On the other hand, if the `source` value is set, then the regular expression is applied to the value stored in the shared map under that name.
+If the `source` value is set, then the regular expression is applied to the value stored in the shared map under that name.
 
 The following log line is put through this two-stage pipeline:
 
@@ -1179,6 +1434,28 @@ time: 2022-01-01T01:00:00.000000001Z
 Then, the regular expression stage parses the value for time from the shared values and appends the subsequent key-value pair back into the extracted values map:
 
 ```text
+year: 2022
+```
+
+The following example demonstrates how `labels_from_groups` can automatically add the matched groups as labels:
+
+```alloy
+{"timestamp":"2022-01-01T01:00:00.000000001Z"}
+
+stage.json {
+    expressions = { time = "timestamp" }
+}
+stage.regex {
+    expression = "^(?P<year>\\d+)"
+    source = "time"
+    labels_from_groups = true   // Sets up an 'year' label, based on the 'year' capture group's value.
+}
+```
+
+This pipeline produces the same extracted values as before:
+
+```text
+time: 2022-01-01T01:00:00.000000001Z
 year: 2022
 ```
 
@@ -1322,9 +1599,90 @@ stage.sampling {
 }
 ```
 
+### `stage.split_json`
+
+The `stage.split_json` inner block configures a processing stage that splits a top-level JSON array into one log entry for each array element.
+
+The following arguments are supported:
+
+| Name     | Type     | Description                  | Default | Required |
+| -------- | -------- | ---------------------------- | ------- | -------- |
+| `source` | `string` | Source of the data to split. |         | no       |
+
+The `source` field defines the source of data to split.
+By default, this is the log line itself, but it can also be a previously extracted value.
+{{< param "PRODUCT_NAME" >}} rejects an empty `source` string when it loads the configuration.
+
+When the input is a top-level JSON array, the stage replaces the log entry with one entry for each array element, in array order.
+Each new log line is the raw text of its array element, exactly as it appears in the input.
+The stage doesn't re-encode the element.
+The stage also doesn't split nested arrays: an element that's itself an array becomes the log line of a single entry.
+Each new entry keeps the timestamp of the original entry, and the emitted entries have independent labels, top-level extracted maps, and structured metadata, so later stages can modify one entry without affecting the others.
+
+An empty array produces no entries.
+The stage drops the original entry and emits nothing.
+
+In all other cases, the log entry passes through the stage unchanged.
+This happens when the input isn't valid JSON, or is valid JSON that's not an array, such as an object, a string, or a number.
+When you set `source`, the log entry also passes through unchanged when the extracted value is missing or can't be converted to a string.
+When you set `source`, the stage never falls back to the log line and only reads the extracted value named by `source`.
+
+The following stage omits `source`, so it splits log lines that are top-level JSON arrays:
+
+```alloy
+stage.split_json {}
+```
+
+Given the following log line:
+
+```text
+[{"level":"info","msg":"one"},{"level":"error","msg":"two"}]
+```
+
+The stage replaces it with the following two entries:
+
+```text
+{"level":"info","msg":"one"}
+{"level":"error","msg":"two"}
+```
+
+Both entries keep the timestamp, labels, extracted values, and structured metadata of the original entry.
+
+In the following example, each log line holds a batch of events in a `records` array.
+The first stage extracts the array into the shared map of extracted values, and the second stage splits it:
+
+```alloy
+stage.json {
+    expressions = {records = ""}
+}
+
+stage.split_json {
+    source = "records"
+}
+```
+
+Given the following log line:
+
+```text
+{"stream":"batch","records":[{"ts":"2024-01-01T01:00:00Z","msg":"start"},{"ts":"2024-01-01T01:00:01Z","msg":"stop"}]}
+```
+
+The first stage stores the `records` array in the extracted data as JSON text.
+The second stage splits that value into two entries:
+
+```text
+{"ts":"2024-01-01T01:00:00Z","msg":"start"}
+{"ts":"2024-01-01T01:00:01Z","msg":"stop"}
+```
+
+Later stages can process each entry separately.
+For example, `stage.json` followed by `stage.timestamp` can set each entry's timestamp from its `ts` field.
+
 ### `stage.static_labels`
 
-The `stage.static_labels` inner block configures a static_labels processing stage that adds a static set of labels to incoming log entries.
+The `stage.static_labels` inner block configures a `static_labels` processing stage that adds a static set of labels to incoming log entries.
+
+For labels that are dynamic, refer to [`stage.labels`](#stagelabels)
 
 The following arguments are supported:
 
@@ -1344,14 +1702,16 @@ stage.static_labels {
 ### `stage.structured_metadata`
 
 The `stage.structured_metadata` inner block configures a stage that can read data from the extracted values map and add them to log entries as structured metadata.
+If you add labels to structured metadata, the labels are removed from the label map.
 
 The following arguments are supported:
 
-| Name     | Type          | Description                                                                 | Default | Required |
-| -------- | ------------- | --------------------------------------------------------------------------- | ------- | -------- |
-| `values` | `map(string)` | Specifies the list of labels to add from extracted values map to log entry. | `{}`    | no       |
+| Name     | Type          | Description                                                                                 | Default | Required |
+| -------- | ------------- | ------------------------------------------------------------------------------------------- | ------- | -------- |
+| `values` | `map(string)` | Specifies the list of labels to add from extracted values map to log entry.                 | `{}`    | no       |
+| `regex`  | `string`      | Specifies a regular expression, matching extracted values are added to structured metadata. | `""`    | no       |
 
-In a `structured_metadata` stage, the map's keys define the label to set and the values are how to look them up.
+In a `structured_metadata` stage, the keys for the `values` map define the labels to set and the values define how to look them up.
 If the value is empty, it's inferred to be the same as the key.
 
 ```alloy
@@ -1360,6 +1720,23 @@ stage.structured_metadata {
       env  = "",         // Sets up an 'env' property to structured metadata, based on the 'env' extracted value.
       user = "username", // Sets up a 'user' property to structured metadata, based on the 'username' extracted value.
     }
+    regex = "pod_.*"   // Adds all extracted values starting with 'pod_' to structured metadata.
+}
+```
+
+### `stage.structured_metadata_drop`
+
+The `stage.structured_metadata_drop` inner block configures a processing stage that drops structured metadata from incoming log entries.
+
+The following arguments are supported:
+
+| Name     | Type           | Description                                               | Default | Required |
+| -------- | -------------- | --------------------------------------------------------- | ------- | -------- |
+| `values` | `list(string)` | Configures a `structured_metadata_drop` processing stage. | `[]`    |          |
+
+```alloy
+stage.structured_metadata_drop {
+    values = [ "kubernetes_node_name", "kubernetes_namespace" ]
 }
 ```
 
@@ -1590,17 +1967,21 @@ stage.tenant {
 ### `stage.timestamp`
 
 The `stage.timestamp` inner block configures a processing stage that sets the timestamp of log entries before they're forwarded to the next component.
-When no timestamp stage is set, the log entry timestamp defaults to the time when the log entry was scraped.
+When no timestamp stage is set, `loki.process` keeps the timestamp that the upstream component already attached to the entry, for example a `loki.source.*` component.
+Many sources set that timestamp to the time they receive the entry by default.
+Other sources can use a timestamp embedded in the log when you enable incoming-timestamp options.
+If you leave out `stage.timestamp`, `loki.process` does not rewrite or sanitize timestamps by itself, and Loki may still reject entries that fall outside its configured acceptance window, for example far-future or out-of-order timestamps.
 
 The following arguments are supported:
 
-| Name                | Type           | Description                                                 | Default   | Required |
-| ------------------- | -------------- | ----------------------------------------------------------- | --------- | -------- |
-| `format`            | `string`       | Determines how to parse the source string.                  |           | yes      |
-| `source`            | `string`       | Name from extracted values map to use for the timestamp.    |           | yes      |
-| `action_on_failure` | `string`       | What to do when the timestamp can't be extracted or parsed. | `"fudge"` | no       |
-| `fallback_formats`  | `list(string)` | Fallback formats to try if the `format` field fails.        | `[]`      | no       |
-| `location`          | `string`       | IANA Timezone Database location to use when parsing.        | `""`      | no       |
+| Name                            | Type           | Description                                                 | Default   | Required |
+| ------------------------------- | -------------- | ----------------------------------------------------------- | --------- | -------- |
+| `format`                        | `string`       | Determines how to parse the source string.                  |           | yes      |
+| `source`                        | `string`       | Name from extracted values map to use for the timestamp.    |           | yes      |
+| `action_on_failure`             | `string`       | What to do when the timestamp can't be extracted or parsed. | `"fudge"` | no       |
+| `action_on_duplicate_timestamp` | `string`       | What to do when parsing duplicate timestamps.               | `"fudge"` | no       |
+| `fallback_formats`              | `list(string)` | Fallback formats to try if the `format` field fails.        | `[]`      | no       |
+| `location`                      | `string`       | IANA Timezone Database location to use when parsing.        | `""`      | no       |
 
 {{< admonition type="note" >}}
 Be careful with further stages which may also override the timestamp.
@@ -1675,6 +2056,13 @@ The supported actions are:
 * fudge (default): Change the timestamp to the last known timestamp, summing up 1 nanosecond to guarantee log entries ordering.
 * skip: Don't change the timestamp and keep the time when the log entry was scraped.
 
+The `action_on_duplicate_timestamp` field defines what to do when parsing succeeds but the parsed timestamp is equal to the last emitted timestamp for that stream, for example, when multiple messages share the same second or millisecond.
+
+The supported actions are:
+
+* fudge (default): Set the entry timestamp to the last emitted timestamp plus 1 nanosecond so that message order is preserved in Loki and Grafana.
+* keep: Leave the parsed timestamp as-is; duplicate timestamps may appear out of order downstream.
+
 The following stage fetches the `time` value from the shared values map, parses it as a RFC3339 format, and sets it as the log entry's timestamp.
 
 ```alloy
@@ -1691,6 +2079,82 @@ stage.timestamp {
     source = "time"
     format = "2006-01-02T15:04:05,000-07:00"
 }
+```
+
+### `stage.truncate`
+
+The `stage.truncate` inner block configures a processing stage that truncates log entries, labels, extracted map fields, or structured metadata that exceed configured limits.
+
+The `stage.truncate` block doesn't support any arguments and is only configured via a number of nested inner `rule` blocks.
+
+The following block is supported inside the definition of `stage.truncate`:
+
+| Block              | Description                   | Required |
+| ------------------ | ----------------------------- | -------- |
+| [`rule`][rule]     | Defines a truncation rule.    | yes      |
+
+[rule]: #rule
+
+#### `rule`
+
+Defines a truncation rule that will apply to the log line, labels, structured metadata, or extracted map.
+
+The following arguments are supported:
+
+| Name          | Type           | Description                                                   | Default  | Required |
+|---------------|----------------|---------------------------------------------------------------|----------|----------|
+| `limit`       | `string`       | Maximum length before truncating.                             | `""`     | yes      |
+| `sources`     | `list(string)` | Sources of the data to truncate. If empty, will truncate all. | `""`     | no       |
+| `source_type` | `string`       | Source location of the data to truncate.                      | `"line"` | no       |
+| `suffix`      | `string`       | Suffix to append to truncated values.                         | ``       | no       |
+
+The `limit` attribute should be expressed in logical units, for example `"1KiB"`.
+The stage checks the byte length of the log line, label values, or structured metadata values against the configured limit and truncates if it exceeds the limit.
+If you provide a `suffix`, the limit is reduced by the length of the `suffix`, and the `suffix` is appended to the truncated value.
+
+The `source_type` attribute must be one of `"line"`, `"label"`, `"structured_metadata"`, or `"extracted"`.
+If the `source` attribute is specified, the stage will only truncate a label, structured metadata, or extracted field of the same name.
+If `source` is empty, all labels, structured metadata, or extracted fields will be truncated if they exceed the limit.
+
+Whenever a line, label, extracted field, or structured metadata value is truncated, the metric `loki_process_truncated_fields_total` is incremented.
+The `field` label will either be `line`, `label`, `extracted`, or `structured_metadata`.
+
+If anything has been truncated, the extracted map for the entry contains a `"truncated"` field with a comma delimited list of field types that have been truncated.
+
+#### Example
+
+```alloy
+loki.process "default" {
+  forward_to = [loki.write.default.receiver]
+  stage.truncate {
+    rule {
+      limit = "12B"
+      suffix = "..."
+    }
+
+    rule {
+      limit = "12B"
+      suffix = "..."
+      source_type = "label"
+    }
+  }
+}
+```
+
+Given the following input entry, the first rule in the stage truncates the entry `"I'm a log message!"` into `"I'm a log..."`.
+The second rule truncates the `"label2"` label's value `"hello world"` to `"hello..."`.
+
+```text
+entry: "I'm a log message!"
+labels: { "label1": "hi", "label2": "hello world" }
+structured_metadata: { "metadata1": "here is some metadata", "metadata2": "and here is some more"}
+```
+
+The extracted map for the entry contains the `"truncated"` field.
+You can use this entry to add a label in `stage.labels` or structured metadata in `stage.structured_metadata` to the entry so you can identify the logs as truncated after processing.
+
+```text
+truncated: label,line
 ```
 
 ### `stage.windowsevent`
@@ -1796,7 +2260,10 @@ The following fields are exported and can be referenced by other components:
 ## Debug metrics
 
 * `loki_process_dropped_lines_total` (counter): Number of lines dropped as part of a processing stage.
-* `loki_process_dropped_lines_by_label_total` (counter):  Number of lines dropped when `by_label_name` is non-empty in [stage.limit][].
+* `loki_process_dropped_lines_by_label_total` (counter):  Number of lines dropped when `by_label_name` is non-empty in [stage.limit](#stagelimit).
+* `loki_process_truncated_fields_total` (counter): Number of lines, label values, extracted field values, and structured metadata values truncated as part of a `truncate` stage.
+* `loki_process_cri_partial_lines_flushed_total` (counter): Number of partial lines flushed prematurely due to `max_partial_lines` limit being exceeded in [stage.cri](#stagecri).
+* `loki_process_cri_lines_truncated_total` (counter): Number of lines truncated due to `max_partial_line_size` limit in [stage.cri](#stagecri).
 
 ## Example
 

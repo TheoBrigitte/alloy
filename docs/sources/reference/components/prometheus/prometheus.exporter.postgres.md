@@ -5,6 +5,8 @@ aliases:
 description: Learn about prometheus.exporter.postgres
 labels:
   stage: general-availability
+  products:
+    - oss
 title: prometheus.exporter.postgres
 ---
 
@@ -27,12 +29,12 @@ prometheus.exporter.postgres "<LABEL>" {
 You can use the following arguments with `prometheus.exporter.postgres`:
 
 | Name                         | Type           | Description                                                                   | Default | Required |
-|------------------------------|----------------|-------------------------------------------------------------------------------|---------|----------|
+| ---------------------------- | -------------- | ----------------------------------------------------------------------------- | ------- | -------- |
 | `data_source_names`          | `list(secret)` | Specifies the PostgreSQL servers to connect to.                               |         | yes      |
-| `custom_queries_config_path` | `string`       | Path to YAML file containing custom queries to expose as metrics.             | ""      | no       |
+| `custom_queries_config_path` | `string`       | Path to YAML file containing custom queries to expose as metrics.             | `""`    | no       |
 | `disable_default_metrics`    | `bool`         | When `true`, only exposes metrics supplied from `custom_queries_config_path`. | `false` | no       |
 | `disable_settings_metrics`   | `bool`         | Disables collection of metrics from `pg_settings`.                            | `false` | no       |
-| `enabled_collectors`         | `list(string)` | List of collectors to enable. Refer to the information below for more detail. | []      | no       |
+| `enabled_collectors`         | `list(string)` | List of collectors to enable. Refer to the information below for more detail. | `[]`    | no       |
 
 Refer to the [PostgreSQL documentation](https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING) for more information about the format of the connection strings in `data_source_names`.
 
@@ -43,6 +45,8 @@ There are a number of environment variables that aren't recommended for use, as 
 Refer to the [`postgres_exporter` repository](https://github.com/prometheus-community/postgres_exporter#environment-variables) for a full list of environment variables.
 {{< /admonition >}}
 
+The `prometheus.exporter.postgres` component configures the embedded [`postgres_exporter`](https://github.com/prometheus-community/postgres_exporter) to run with a collection timeout of 10 seconds.
+
 By default, the same set of metrics is enabled as in the upstream [`postgres_exporter`](https://github.com/prometheus-community/postgres_exporter/).
 If `custom_queries_config_path` is set, additional metrics defined in the given configuration file will be exposed.
 If `disable_default_metrics` is set to `true`, only the metrics defined in the `custom_queries_config_path` file will be exposed.
@@ -52,18 +56,20 @@ The following collectors are available for selection:
 
 {{< column-list >}}
 
-* `database`
+* `buffercache_summary`
 * `database_wraparound`
+* `database`
 * `locks`
 * `long_running_transactions`
 * `postmaster`
 * `process_idle`
-* `replication`
 * `replication_slot`
+* `replication`
 * `stat_activity_autovacuum`
 * `stat_bgwriter`
 * `stat_checkpointer` - Only supported in PostgreSQL 17 and later
 * `stat_database`
+* `stat_progress_vacuum`
 * `stat_statements`
 * `stat_user_tables`
 * `stat_wal_receiver`
@@ -80,10 +86,12 @@ By default, the following collectors are enabled:
 
 * `database`
 * `locks`
-* `replication`
 * `replication_slot`
+* `replication`
+* `roles`
 * `stat_bgwriter`
 * `stat_database`
+* `stat_progress_vacuum`
 * `stat_user_tables`
 * `statio_user_tables`
 * `wal`
@@ -98,11 +106,15 @@ Due to a limitation of the upstream exporter, when multiple `data_source_names` 
 
 You can use the following block with `prometheus.exporter.postgres`:
 
+{{< docs/alloy-config >}}
+
 | Name                             | Description                  | Required |
 | -------------------------------- | ---------------------------- | -------- |
 | [`autodiscovery`][autodiscovery] | Database discovery settings. | no       |
 
 [autodiscovery]: #autodiscovery
+
+{{< /docs/alloy-config >}}
 
 ### `autodiscovery`
 
@@ -119,6 +131,20 @@ The following arguments are supported:
 If `enabled` is set to `true` and no allowlist or denylist is specified, the exporter scrapes from all databases.
 
 If `autodiscovery` is disabled, neither `database_allowlist` nor `database_denylist` has any effect.
+
+### `stat_statements`
+
+The `stat_statements` block configures the selection of both the query ID and the full SQL statement.
+This configuration takes effect only when the `stat_statements` collector is enabled.
+
+The following arguments are supported:
+| Name                | Type           | Description                                         | Default | Required |
+| ------------------- | -------------- | --------------------------------------------------- | ------- | -------- |
+| `exclude_databases` | `list(string)` | Comma-separated list of database names to exclude.  | `[]`    | no       |
+| `exclude_users`     | `list(string)` | Comma-separated list of user names to exclude.      | `[]`    | no       |
+| `include_query`     | `bool`         | Enable the selection of query ID and SQL statement. | `false` | no       |
+| `limit`             | `number`       | Maximum number of statements to fetch.              | `100`   | no       |
+| `query_length`      | `number`       | Maximum length of the statement query text.         | `120`   | no       |
 
 ## Exported fields
 
@@ -249,6 +275,19 @@ prometheus.remote_write "demo" {
   }
 }
 ```
+
+### Escape special characters in postgres url
+
+If your PostgreSQL connection string includes special characters for e.g. password (`@`, `:`, `/`, etc.), you should wrap the password using `encoding.url_encode`.
+
+```alloy
+prometheus.exporter.postgres "example" {
+  data_source_names = [
+    "postgresql://username:" + encoding.url_encode("p@ss/w:ord!") + "@localhost:5432/dbname?sslmode=disable"
+  ]
+}
+```
+This ensures the DSN remains valid and correctly parsed.
 
 Replace the following:
 

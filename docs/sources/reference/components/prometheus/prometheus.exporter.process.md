@@ -5,12 +5,16 @@ aliases:
 description: Learn about prometheus.exporter.process
 labels:
   stage: general-availability
+  products:
+    - oss
 title: prometheus.exporter.process
 ---
 
 # `prometheus.exporter.process`
 
 The `prometheus.exporter.process` component embeds the [`process_exporter`](https://github.com/ncabatoff/process-exporter) for collecting process stats from `/proc`.
+
+{{< docs/shared lookup="reference/components/exporter-clustering-warning.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
 ## Usage
 
@@ -23,23 +27,39 @@ prometheus.exporter.process "<LABEL>" {
 
 You can use the following arguments with `prometheus.exporter.process`:
 
-| Name                | Type     | Description                                       | Default | Required |
-| ------------------- | -------- | ------------------------------------------------- | ------- | -------- |
-| `gather_smaps`      | `bool`   | Gather metrics from the smaps file for a process. | `true`  | no       |
-| `procfs_path`       | `string` | The procfs mount point.                           | `/proc` | no       |
-| `recheck_on_scrape` | `bool`   | Recheck process names on each scrape.             | `true`  | no       |
-| `track_children`    | `bool`   | Whether to track a process' children.             | `true`  | no       |
-| `track_threads`     | `bool`   | Report metrics for a process' individual threads. | `true`  | no       |
+| Name                  | Type     | Description                                       | Default   | Required |
+| --------------------- | -------- | ------------------------------------------------- | --------- | -------- |
+| `gather_smaps`        | `bool`   | Gather metrics from the smaps file for a process. | `true`    | no       |
+| `procfs_path`         | `string` | The procfs mount point.                           | `"/proc"` | no       |
+| `recheck_on_scrape`   | `bool`   | Recheck process names on each scrape.             | `false`   | no       |
+| `remove_empty_groups` | `bool`   | Forget process groups with no processes.          | `false`   | no       |
+| `track_children`      | `bool`   | Whether to track a process' children.             | `true`    | no       |
+| `track_threads`       | `bool`   | Report metrics for a process' individual threads. | `true`    | no       |
+
+If you set `remove_empty_groups` to the default, `false`, the process "groups" created by the `matcher` blocks continue to report metrics even after the processes in that group have stopped running.
+This ensures you can see when a process count drops to zero, but it can cause unbounded growth in reported metrics and memory usage if your `matcher` generates dynamic group names, for example, using specific PIDs.
+The reporting continues until {{< param "PRODUCT_NAME" >}} is restarted.
+
+When you set `remove_empty_groups` to `true`, process groups are forgotten and stop reporting metrics as soon as they contain no running processes.
+Grafana recommends that you set `remove_empty_groups` to `true` if your name argument utilizes unique identifiers like `.PID` or `.StartTime`.
+
+For example, when you set `remove_empty_groups` to `false` and the `name` argument for a `matcher` block utilizes the `.PID` of a process, the `matcher` creates a new process group for every new process instance.
+The old process groups continue to report metrics with values of 0, even though no running processes are associated with them, leading to high cardinality.
+Set `remove_empty_groups` to `true` to remove the old groups, and prevent the high cardinality.
 
 ## Blocks
 
 You can use the following block with `prometheus.exporter.process`:
+
+{{< docs/alloy-config >}}
 
 | Name        | Description                                                                    | Required |
 | ----------- | ------------------------------------------------------------------------------ | -------- |
 | [matcher][] | A collection of matching rules to use for deciding which processes to monitor. | no       |
 
 [matcher]: #matcher
+
+{{< /docs/alloy-config >}}
 
 ### `matcher`
 
@@ -58,7 +78,7 @@ The `name` argument can use the following template variables. By default it uses
 * `{{.ExeBase}}`: Basename of the executable from argv[0].
 * `{{.ExeFull}}`: Fully qualified path of the executable.
 * `{{.Username}}`: Username of the effective user.
-* `{{.Matches}}`: Map containing all regular explression capture groups resulting from matching a process with the cmdline rule group.
+* `{{.Matches}}`: Map containing all regular expression capture groups resulting from matching a process with the cmdline rule group.
 * `{{.PID}}`: PID of the process. Note that the PID is copied from the first executable found.
 * `{{.StartTime}}`: The start time of the process. This is useful when combined with PID as PIDS get reused over time.
 * `{{.Cgroups}}`: The cgroups, if supported, of the process (`/proc/self/cgroup`). This is particularly useful for identifying to which container a process belongs.

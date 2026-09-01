@@ -2,36 +2,54 @@ name: Lint
 on:
   workflow_call:
 
+permissions:
+  contents: read
+
 jobs:
   lint_go:
     name: Lint Go
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-8-cores
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-    - name: Set up Go
-      uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       with:
-        go-version-file: go.mod
-        cache: false
+        persist-credentials: false
 
-    - name: Lint alloy module
-      uses: golangci/golangci-lint-action@1481404843c368bc19ca9406f87d6e0fc97bdcfd # v7.0.0
+    - name: Setup tools
+      uses: jdx/mise-action@dba19683ed58901619b14f395a24841710cb4925 # v4.1.0
       with:
-        # renovate: datasource=github-releases packageName=golangci/golangci-lint
-        version: v2.1.1
+        version: v2026.5.18
+        sha256: cfac593469d028d7ae5fe36e37bd7c59118b5238e92d8a876209578464f24a84
+        install_args: go task golangci-lint
 
-    - name: Lint syntax module
-      uses: golangci/golangci-lint-action@1481404843c368bc19ca9406f87d6e0fc97bdcfd # v7.0.0
+    - name: Lint Go
+      run: task lint:go
+
+    - name: Run Alloy Lint
+      run: task lint:alloylint 
+
+  govulncheck:
+    name: Govulncheck
+    # xlarge (64 GB): govulncheck's SSA call graph on the
+    # alloy/collector/alloyengine modules exceeds smaller runners.
+    runs-on: ubuntu-x64-xlarge
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       with:
-        # renovate: datasource=github-releases packageName=golangci/golangci-lint
-        version: v2.1.1
-        working-directory: ./syntax/
+        persist-credentials: false
 
-    - name: Run custom linters
-      run: make run-alloylint
+    - name: Setup tools
+      uses: jdx/mise-action@dba19683ed58901619b14f395a24841710cb4925 # v4.1.0
+      with:
+        version: v2026.5.18
+        sha256: cfac593469d028d7ae5fe36e37bd7c59118b5238e92d8a876209578464f24a84
+        install_args: go govulncheck task
+
+    - name: Run govulncheck
+      run: task lint:govulncheck
 
   shellcheck:
     name: Shellcheck
@@ -39,18 +57,19 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-    - name: Shellcheck
-      uses: Azbagheri/shell-linter@30a9cf3f6cf25c08fc98f10d7dc4167f7b5c0c00 # v0.8.0
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       with:
-        path: "\
-          packaging,\
-          production,\
-          tools/ci,\
-          tools/release,\
-          docs/sources/tutorials/assets\
-          "
+        persist-credentials: false
+
+    - name: Setup tools
+      uses: jdx/mise-action@dba19683ed58901619b14f395a24841710cb4925 # v4.1.0
+      with:
+        version: v2026.5.18
+        sha256: cfac593469d028d7ae5fe36e37bd7c59118b5238e92d8a876209578464f24a84
+        install_args: shellcheck task go
+
+    - name: Run shellcheck
+      run: task lint:shellcheck
 
   lint_ui:
     name: Lint UI
@@ -61,15 +80,22 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-    - name: Set up Node.js
-      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       with:
-        node-version: 22
+        persist-credentials: false
+
+    - name: Setup tools
+      uses: jdx/mise-action@dba19683ed58901619b14f395a24841710cb4925 # v4.1.0
+      with:
+        version: v2026.5.18
+        sha256: cfac593469d028d7ae5fe36e37bd7c59118b5238e92d8a876209578464f24a84
+        install_args: node
 
     - name: Install dependencies
-      run: yarn
+      run: npm ci --no-audit --no-fund
 
     - name: Lint
-      run: yarn run lint:ci
+      run: npm run lint
+
+    - name: Format
+      run: npm run format

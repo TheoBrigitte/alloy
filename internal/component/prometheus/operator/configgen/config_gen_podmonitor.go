@@ -1,6 +1,6 @@
 package configgen
 
-// SEE https://github.com/prometheus-operator/prometheus-operator/blob/aa8222d7e9b66e9293ed11c9291ea70173021029/pkg/prometheus/promcfg.go
+// SEE https://github.com/prometheus-operator/prometheus-operator/blob/4d008d5a5698e425e745daa6222a534357b93b57/pkg/prometheus/promcfg.go
 
 import (
 	"fmt"
@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/alecthomas/units"
 	promopv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"github.com/prometheus-operator/prometheus-operator/pkg/namespacelabeler"
 	commonConfig "github.com/prometheus/common/config"
@@ -47,6 +48,13 @@ func (cg *ConfigGenerator) GeneratePodMonitorConfig(m *promopv1.PodMonitor, ep p
 			return nil, fmt.Errorf("parsing timeout from podMonitor: %w", err)
 		}
 	}
+	if m.Spec.ScrapeProtocols != nil {
+		protocols, err := convertScrapeProtocols(m.Spec.ScrapeProtocols)
+		if err != nil {
+			return nil, err
+		}
+		cfg.ScrapeProtocols = protocols
+	}
 	if ep.Path != "" {
 		cfg.MetricsPath = ep.Path
 	}
@@ -60,22 +68,22 @@ func (cg *ConfigGenerator) GeneratePodMonitorConfig(m *promopv1.PodMonitor, ep p
 	if ep.Params != nil {
 		cfg.Params = ep.Params
 	}
-	if ep.Scheme != "" {
-		cfg.Scheme = ep.Scheme
+	if ep.Scheme != nil && *ep.Scheme != "" {
+		cfg.Scheme = string(*ep.Scheme)
 	}
 	if ep.FollowRedirects != nil {
 		cfg.HTTPClientConfig.FollowRedirects = *ep.FollowRedirects
 	}
-	if ep.EnableHttp2 != nil {
-		cfg.HTTPClientConfig.EnableHTTP2 = *ep.EnableHttp2
+	if ep.EnableHTTP2 != nil {
+		cfg.HTTPClientConfig.EnableHTTP2 = *ep.EnableHTTP2
 	}
 	if ep.TLSConfig != nil {
-		if cfg.HTTPClientConfig.TLSConfig, err = cg.generateSafeTLS(ep.TLSConfig.SafeTLSConfig, m.Namespace); err != nil {
+		if cfg.HTTPClientConfig.TLSConfig, err = cg.generateSafeTLS(*ep.TLSConfig, m.Namespace); err != nil {
 			return nil, err
 		}
 	}
-	if ep.BearerTokenSecret.Name != "" {
-		val, err := cg.Secrets.GetSecretValue(m.Namespace, ep.BearerTokenSecret)
+	if ep.BearerTokenSecret != nil && ep.BearerTokenSecret.Name != "" { //nolint:staticcheck
+		val, err := cg.Secrets.GetSecretValue(m.Namespace, *ep.BearerTokenSecret) //nolint:staticcheck
 		if err != nil {
 			return nil, err
 		}
@@ -169,13 +177,23 @@ func (cg *ConfigGenerator) GeneratePodMonitorConfig(m *promopv1.PodMonitor, ep p
 	}
 
 	// Filter targets based on correct port for the endpoint.
-	if ep.Port != "" {
-		regex, err := relabel.NewRegexp(ep.Port)
+	if ep.Port != nil && *ep.Port != "" {
+		regex, err := relabel.NewRegexp(*ep.Port)
 		if err != nil {
 			return nil, fmt.Errorf("parsing Port as regex: %w", err)
 		}
 		relabels.add(&relabel.Config{
 			SourceLabels: model.LabelNames{"__meta_kubernetes_pod_container_port_name"},
+			Action:       "keep",
+			Regex:        regex,
+		})
+	} else if ep.PortNumber != nil && *ep.PortNumber != 0 {
+		regex, err := relabel.NewRegexp(fmt.Sprint(*ep.PortNumber)) //nolint:staticcheck // Ignore SA1019 this field is marked as deprecated.
+		if err != nil {
+			return nil, fmt.Errorf("parsing PortNumber as regex: %w", err)
+		}
+		relabels.add(&relabel.Config{
+			SourceLabels: model.LabelNames{"__meta_kubernetes_pod_container_port_number"},
 			Action:       "keep",
 			Regex:        regex,
 		})
@@ -185,13 +203,11 @@ func (cg *ConfigGenerator) GeneratePodMonitorConfig(m *promopv1.PodMonitor, ep p
 			if err != nil {
 				return nil, fmt.Errorf("parsing TargetPort as regex: %w", err)
 			}
-			if ep.TargetPort.StrVal != "" { //nolint:staticcheck // Ignore SA1019 this field is marked as deprecated.
-				relabels.add(&relabel.Config{
-					SourceLabels: model.LabelNames{"__meta_kubernetes_pod_container_port_name"},
-					Action:       "keep",
-					Regex:        regex,
-				})
-			}
+			relabels.add(&relabel.Config{
+				SourceLabels: model.LabelNames{"__meta_kubernetes_pod_container_port_name"},
+				Action:       "keep",
+				Regex:        regex,
+			})
 		} else if ep.TargetPort.IntVal != 0 { //nolint:staticcheck // Ignore SA1019 this field is marked as deprecated.
 			regex, err := relabel.NewRegexp(fmt.Sprint(ep.TargetPort.IntValue())) //nolint:staticcheck // Ignore SA1019 this field is marked as deprecated.
 			if err != nil {
@@ -246,9 +262,9 @@ func (cg *ConfigGenerator) GeneratePodMonitorConfig(m *promopv1.PodMonitor, ep p
 		})
 	}
 
-	if ep.Port != "" {
+	if ep.Port != nil && *ep.Port != "" {
 		relabels.add(&relabel.Config{
-			Replacement: ep.Port,
+			Replacement: *ep.Port,
 			TargetLabel: "endpoint",
 		})
 	} else if ep.TargetPort != nil && ep.TargetPort.String() != "" { //nolint:staticcheck // Ignore SA1019 this field is marked as deprecated.
@@ -276,6 +292,11 @@ func (cg *ConfigGenerator) GeneratePodMonitorConfig(m *promopv1.PodMonitor, ep p
 	cfg.LabelLimit = uint(defaultIfNil(m.Spec.LabelLimit, 0))
 	cfg.LabelNameLengthLimit = uint(defaultIfNil(m.Spec.LabelNameLengthLimit, 0))
 	cfg.LabelValueLengthLimit = uint(defaultIfNil(m.Spec.LabelValueLengthLimit, 0))
+	if m.Spec.BodySizeLimit != nil {
+		if cfg.BodySizeLimit, err = units.ParseBase2Bytes(string(*m.Spec.BodySizeLimit)); err != nil {
+			return nil, fmt.Errorf("parsing bodySizeLimit from podMonitor: %w", err)
+		}
+	}
 
 	return cfg, cfg.Validate(cg.ScrapeOptions.GlobalConfig())
 }

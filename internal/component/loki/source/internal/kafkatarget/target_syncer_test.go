@@ -7,17 +7,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grafana/alloy/internal/component/common/loki/client/fake"
-
+	"github.com/IBM/sarama"
 	"github.com/grafana/dskit/flagext"
 	"github.com/prometheus/common/config"
-
-	"github.com/IBM/sarama"
-	"github.com/go-kit/log"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/relabel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/grafana/alloy/internal/component/common/loki"
+	"github.com/grafana/alloy/internal/runtime/logging"
 )
 
 func Test_TopicDiscovery(t *testing.T) {
@@ -31,7 +30,7 @@ func Test_TopicDiscovery(t *testing.T) {
 	ts := &TargetSyncer{
 		ctx:          ctx,
 		cancel:       cancel,
-		logger:       log.NewNopLogger(),
+		logger:       logging.NewSlogNop(),
 		topicManager: mustNewTopicsManager(client, []string{"topic1", "topic2"}),
 		close: func() error {
 			closed = true
@@ -41,7 +40,7 @@ func Test_TopicDiscovery(t *testing.T) {
 			ctx:           t.Context(),
 			cancel:        func() {},
 			ConsumerGroup: group,
-			logger:        log.NewNopLogger(),
+			logger:        logging.NewSlogNop(),
 			discoverer: DiscovererFn(func(s sarama.ConsumerGroupSession, c sarama.ConsumerGroupClaim) (RunnableTarget, error) {
 				return nil, nil
 			}),
@@ -58,22 +57,18 @@ func Test_TopicDiscovery(t *testing.T) {
 	ts.loop()
 
 	require.Eventually(t, func() bool {
-		group.mut.Lock()
 		if !group.consuming.Load() {
 			return false
 		}
-		group.mut.Unlock()
 		return reflect.DeepEqual([]string{"topic1"}, group.GetTopics())
-	}, 5*time.Second, 100*time.Millisecond, "expected topics: %v, got: %v", []string{"topic1"}, group.GetTopics())
+	}, 1*time.Minute, 100*time.Millisecond, "expected topics: %v, got: %v", []string{"topic1"}, group.GetTopics())
 
 	client.UpdateTopics([]string{"topic1", "topic2"})
 
 	require.Eventually(t, func() bool {
-		group.mut.Lock()
 		if !group.consuming.Load() {
 			return false
 		}
-		group.mut.Unlock()
 		return reflect.DeepEqual([]string{"topic1", "topic2"}, group.GetTopics())
 	}, 5*time.Second, 100*time.Millisecond, "expected topics: %v, got: %v", []string{"topic1", "topic2"}, group.GetTopics())
 
@@ -83,16 +78,17 @@ func Test_TopicDiscovery(t *testing.T) {
 
 func Test_NewTarget(t *testing.T) {
 	ts := &TargetSyncer{
-		logger: log.NewNopLogger(),
-		client: fake.NewClient(func() {}),
+		logger: logging.NewSlogNop(),
+		client: loki.NewCollectingHandler(),
 		cfg: Config{
 			RelabelConfigs: []*relabel.Config{
 				{
-					SourceLabels: model.LabelNames{"__meta_kafka_topic"},
-					TargetLabel:  "topic",
-					Replacement:  "$1",
-					Action:       relabel.Replace,
-					Regex:        relabel.MustNewRegexp("(.*)"),
+					SourceLabels:         model.LabelNames{"__meta_kafka_topic"},
+					TargetLabel:          "topic",
+					Replacement:          "$1",
+					Action:               relabel.Replace,
+					Regex:                relabel.MustNewRegexp("(.*)"),
+					NameValidationScheme: model.LegacyValidation,
 				},
 			},
 			KafkaConfig: TargetConfig{
@@ -119,7 +115,7 @@ func Test_NewTarget(t *testing.T) {
 
 func Test_NewDroppedTarget(t *testing.T) {
 	ts := &TargetSyncer{
-		logger: log.NewNopLogger(),
+		logger: logging.NewSlogNop(),
 		cfg: Config{
 			KafkaConfig: TargetConfig{
 				UseIncomingTimestamp: true,

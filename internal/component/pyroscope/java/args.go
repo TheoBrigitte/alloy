@@ -14,44 +14,53 @@ type Arguments struct {
 
 	TmpDir          string          `alloy:"tmp_dir,attr,optional"`
 	ProfilingConfig ProfilingConfig `alloy:"profiling_config,block,optional"`
+
+	// undocumented
+	Dist string `alloy:"dist,attr,optional"`
 }
 
 type ProfilingConfig struct {
-	Interval   time.Duration `alloy:"interval,attr,optional"`
-	SampleRate int           `alloy:"sample_rate,attr,optional"`
-	Alloc      string        `alloy:"alloc,attr,optional"`
-	Lock       string        `alloy:"lock,attr,optional"`
-	CPU        bool          `alloy:"cpu,attr,optional"`
-	Event      string        `alloy:"event,attr,optional"`
-	PerThread  bool          `alloy:"per_thread,attr,optional"`
+	Interval        time.Duration `alloy:"interval,attr,optional"`
+	SampleRate      int           `alloy:"sample_rate,attr,optional"`
+	Alloc           string        `alloy:"alloc,attr,optional"`
+	Lock            string        `alloy:"lock,attr,optional"`
+	CPU             bool          `alloy:"cpu,attr,optional"`
+	Event           string        `alloy:"event,attr,optional"`
+	PerThread       bool          `alloy:"per_thread,attr,optional"`
+	LogLevel        string        `alloy:"log_level,attr,optional"`
+	Quiet           bool          `alloy:"quiet,attr,optional"`
+	CustomArguments []string      `alloy:"custom_arguments,attr,optional"`
+	Tlab            bool          `alloy:"tlab,attr,optional"`
 }
 
-func (rc *Arguments) UnmarshalAlloy(f func(interface{}) error) error {
-	*rc = defaultArguments()
+func (rc *Arguments) UnmarshalAlloy(f func(any) error) error {
+	*rc = DefaultArguments()
 	type config Arguments
 	return f((*config)(rc))
 }
 
 func (arg *Arguments) Validate() error {
-	switch arg.ProfilingConfig.Event {
-	case "itimer", "cpu", "wall":
-		return nil
-	default:
-		return fmt.Errorf("invalid event: '%s'. Event must be one of 'itimer', 'cpu' or 'wall'", arg.ProfilingConfig.Event)
+	if len(arg.ProfilingConfig.CustomArguments) == 0 && arg.ProfilingConfig.Tlab && arg.ProfilingConfig.Alloc == "" {
+		return fmt.Errorf("profiling_config.tlab requires profiling_config.alloc to be set")
 	}
+	return nil
 }
 
-func defaultArguments() Arguments {
+func DefaultArguments() Arguments {
 	return Arguments{
 		TmpDir: "/tmp",
 		ProfilingConfig: ProfilingConfig{
-			Interval:   60 * time.Second,
-			SampleRate: 100,
-			Alloc:      "10ms",
-			Lock:       "512k",
-			CPU:        true,
-			Event:      "itimer",
-			PerThread:  false,
+			Interval:        60 * time.Second,
+			SampleRate:      100,
+			Alloc:           "512k",
+			Lock:            "10ms",
+			CPU:             true,
+			Event:           "itimer",
+			PerThread:       false,
+			LogLevel:        "INFO",
+			Quiet:           false,
+			CustomArguments: []string{},
+			Tlab:            false,
 		},
 	}
 }

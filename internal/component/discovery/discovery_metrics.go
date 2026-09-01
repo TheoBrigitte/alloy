@@ -2,8 +2,8 @@ package discovery
 
 import (
 	"context"
+	"log/slog"
 
-	"github.com/go-kit/log"
 	"github.com/prometheus/client_golang/prometheus"
 	promdiscovery "github.com/prometheus/prometheus/discovery"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
@@ -20,7 +20,7 @@ type discovererWithMetrics struct {
 	sdMetrics      promdiscovery.DiscovererMetrics
 }
 
-func NewDiscovererWithMetrics(cfg promdiscovery.Config, reg prometheus.Registerer, logger log.Logger) (DiscovererWithMetrics, error) {
+func NewDiscovererWithMetrics(cfg promdiscovery.Config, reg prometheus.Registerer, logger *slog.Logger) (DiscovererWithMetrics, error) {
 	refreshMetrics := promdiscovery.NewRefreshMetrics(reg)
 	cfg.NewDiscovererMetrics(reg, refreshMetrics)
 

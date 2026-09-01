@@ -3,7 +3,7 @@ canonical: https://grafana.com/docs/alloy/latest/set-up/install/openshift/
 description: Learn how to deploy Grafana Alloy on OpenShift
 menuTitle: OpenShift
 title: Deploy Grafana Alloy on OpenShift
-weight: 530
+weight: 650
 ---
 
 # Deploy {{% param "FULL_PRODUCT_NAME" %}} on OpenShift
@@ -24,7 +24,7 @@ You must configure Role-Based Access Control (RBAC) to allow secure access to Ku
 
 ## Run {{% param "PRODUCT_NAME" %}} as a non-root user
 
-You must configure {{< param "PRODUCT_NAME" >}} to [run as a non-root user][nonroot].
+You must configure {{< param "PRODUCT_NAME" >}} [access and permissions on Kubernetes][access-kubernetes].
 This ensures that {{< param "PRODUCT_NAME" >}} complies with your OCP security policies.
 
 ## Apply security context constraints
@@ -59,7 +59,7 @@ You can adapt the SCCs to meet your local requirements and needs.
 The following example shows a DaemonSet configuration that deploys {{< param "PRODUCT_NAME" >}} as a non-root user:
 
 ```yaml
-apiVersion: aapps/v1
+apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: alloy-logs
@@ -68,26 +68,26 @@ spec:
   selector:
     matchLabels:
       app: alloy-logs
-   template:
-     metadata:
-       labels:
-         app: alloy-logs
-      spec:
-        containers:
-        - name: alloy-logs
-          image: grafana/alloy:<ALLOY_VERSION>
-          ports:
-          - containerPort: 12345
-          # The security context configuration
-          securityContext:
-            readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
-            runAsUser: 473
-            runAsGroup: 473
-            fsGroup: 1000
-         volumes:
-         - name: log-volume
-           emptyDir: {}
+  template:
+    metadata:
+      labels:
+        app: alloy-logs
+    spec:
+      securityContext:
+        runAsUser: 473
+        runAsGroup: 473
+        fsGroup: 1000
+      containers:
+      - name: alloy-logs
+        image: grafana/alloy:<ALLOY_VERSION>
+        ports:
+        - containerPort: 12345
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+      volumes:
+      - name: log-volume
+        emptyDir: {}
 ```
 
 Replace the following:
@@ -158,7 +158,7 @@ Refer to [Deploy {{< param "FULL_PRODUCT_NAME" >}}][deploy] for more information
 
 [rbac.yaml]: https://github.com/grafana/alloy/blob/main/operations/helm/charts/alloy/templates/rbac.yaml
 [rbac]: https://docs.openshift.com/container-platform/latest/authentication/using-rbac.html
-[nonroot]: ../../../configure/nonroot/
+[access-kubernetes]: ../../../access_permissions/kubernetes/
 [scc]: https://docs.openshift.com/container-platform/latest/authentication/managing-security-context-constraints.html
 [Configure]: ../../../configure/linux/
 [deploy]: ../../deploy/

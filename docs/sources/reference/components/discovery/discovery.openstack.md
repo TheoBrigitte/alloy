@@ -5,6 +5,8 @@ aliases:
 description: Learn about discovery.openstack
 labels:
   stage: general-availability
+  products:
+    - oss
 title: discovery.openstack
 ---
 
@@ -43,7 +45,7 @@ You can use the following arguments with `discovery.openstack`:
 | `port`                          | `int`      | The port to scrape metrics from.                                                                     | `80`     | no       |
 | `project_id`                    | `string`   | OpenStack project ID for the Identity V2 and V3 APIs.                                                |          | no       |
 | `project_name`                  | `string`   | OpenStack project name for the Identity V2 and V3 APIs.                                              |          | no       |
-| `refresh_interval`              | `duration` | Refresh interval to re-read the instance list.                                                       | `60s`    | no       |
+| `refresh_interval`              | `duration` | Refresh interval to re-read the instance list.                                                       | `"60s"`  | no       |
 | `userid`                        | `string`   | OpenStack user ID for the Identity V2 and V3 APIs.                                                   |          | no       |
 | `username`                      | `string`   | OpenStack username for the Identity V2 and V3 APIs.                                                  |          | no       |
 
@@ -67,11 +69,15 @@ Some providers allow you to specify a `project_name` instead of the `project_id`
 
 You can use the following block with `discovery.openstack`:
 
+{{< docs/alloy-config >}}
+
 | Block                      | Description                                          | Required |
 | -------------------------- | ---------------------------------------------------- | -------- |
 | [`tls_config`][tls_config] | TLS configuration for requests to the OpenStack API. | no       |
 
 [tls_config]: #tls_config
+
+{{< /docs/alloy-config >}}
 
 ### `tls_config`
 

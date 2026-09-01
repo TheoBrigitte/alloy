@@ -23,13 +23,15 @@ func TestArguments_UnmarshalAlloy(t *testing.T) {
 					forward_to = []
 				`,
 			expected: prometheus.Arguments{
-				IncludeTargetInfo:             true,
-				IncludeScopeInfo:              false,
-				IncludeScopeLabels:            true,
-				GCFrequency:                   5 * time.Minute,
-				AddMetricSuffixes:             true,
-				ForwardTo:                     []storage.Appendable{},
-				ResourceToTelemetryConversion: false,
+				IncludeTargetInfo:                 true,
+				IncludeScopeInfo:                  false,
+				IncludeScopeLabels:                true,
+				GCFrequency:                       5 * time.Minute,
+				AddMetricSuffixes:                 true,
+				ForwardTo:                         []storage.Appendable{},
+				ResourceToTelemetryConversion:     false,
+				HonorMetadata:                     false,
+				KeepIdentifyingResourceAttributes: false,
 			},
 		},
 		{
@@ -41,16 +43,20 @@ func TestArguments_UnmarshalAlloy(t *testing.T) {
 					gc_frequency = "1s"
 					add_metric_suffixes = false
 					resource_to_telemetry_conversion = true
+					honor_metadata = true
+					keep_identifying_resource_attributes = true
 					forward_to = []
 				`,
 			expected: prometheus.Arguments{
-				IncludeTargetInfo:             false,
-				IncludeScopeInfo:              true,
-				IncludeScopeLabels:            false,
-				GCFrequency:                   1 * time.Second,
-				AddMetricSuffixes:             false,
-				ForwardTo:                     []storage.Appendable{},
-				ResourceToTelemetryConversion: true,
+				IncludeTargetInfo:                 false,
+				IncludeScopeInfo:                  true,
+				IncludeScopeLabels:                false,
+				GCFrequency:                       1 * time.Second,
+				AddMetricSuffixes:                 false,
+				ForwardTo:                         []storage.Appendable{},
+				ResourceToTelemetryConversion:     true,
+				HonorMetadata:                     true,
+				KeepIdentifyingResourceAttributes: true,
 			},
 		},
 		{

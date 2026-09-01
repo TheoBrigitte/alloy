@@ -1,9 +1,9 @@
 /.rpmdb/
-/.idea
 /.published
 /.pkg
 /.cache
 /.vscode
+/.history
 /.eventcache
 vendor
 data-alloy/
@@ -17,7 +17,8 @@ data-alloy/
 /dist.temp/
 /packaging/windows/LICENSE
 /packaging/windows/agent-windows-amd64.exe
-internal/web/ui/build
+internal/web/ui/dist
+internal/web/ui/src/test/generated_fixtures/
 
 .DS_Store
 buildx-v*
@@ -32,3 +33,20 @@ node_modules
 # file of the pair will detect a dirty work tree and detect the wrong tag name.
 .tag-only
 .image-tag
+/alloy
+/alloy-service.exe
+collector/otel_engine
+collector/otel_engine.exe
+
+# local testing files
+/targets.yaml
+/config.alloy
+
+# AI
+CLAUDE.local.md
+.codex/
+
+# Beyla embedded binaries (downloaded at build time)
+internal/component/beyla/ebpf/binaries/amd64/beyla
+internal/component/beyla/ebpf/binaries/arm64/beyla
+internal/component/beyla/ebpf/.beyla-binary-version

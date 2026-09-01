@@ -12,10 +12,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	aws_config "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/grafana/alloy/internal/component"
 	"github.com/grafana/alloy/internal/featuregate"
 	"github.com/grafana/alloy/syntax/alloytypes"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 func init() {
@@ -136,7 +137,7 @@ func generateS3Config(args Arguments) (*aws.Config, error) {
 	// Override the endpoint.
 	if args.Options.Endpoint != "" {
 		//nolint:staticcheck // TODO update to use EndpointResolverV2 in s3.NewFromConfig
-		endFunc := aws.EndpointResolverWithOptionsFunc(func(service, region string, _ ...interface{}) (aws.Endpoint, error) {
+		endFunc := aws.EndpointResolverWithOptionsFunc(func(service, region string, _ ...any) (aws.Endpoint, error) {
 			// The S3 compatible system used for testing with does not require signing region, so it's fine to be blank
 			// but when using a proxy to real S3 it needs to be injected.
 			//nolint:staticcheck

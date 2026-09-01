@@ -8,14 +8,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-kit/kit/log"
-	"github.com/grafana/alloy/internal/component/common/loki/utils"
-	"github.com/grafana/loki/v3/clients/pkg/promtail/api"
-	"github.com/grafana/loki/v3/clients/pkg/promtail/scrapeconfig"
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 	"golang.org/x/sys/windows/svc/eventlog"
+
+	"github.com/grafana/alloy/internal/component/common/loki"
+	"github.com/grafana/alloy/internal/loki/promtail/scrapeconfig"
+	"github.com/grafana/alloy/internal/loki/util"
+	"github.com/grafana/alloy/internal/runtime/logging"
 )
 
 func TestBookmarkUpdate(t *testing.T) {
@@ -28,7 +29,7 @@ func TestBookmarkUpdate(t *testing.T) {
 
 	dirPath := "bookmarktest"
 	filePath := path.Join(dirPath, "bookmark.xml")
-	require.NoError(t, os.MkdirAll(path.Dir(filePath), 700))
+	require.NoError(t, os.MkdirAll(path.Dir(filePath), 0700))
 	defer func() {
 		require.NoError(t, os.RemoveAll(dirPath))
 	}()
@@ -43,10 +44,11 @@ func TestBookmarkUpdate(t *testing.T) {
 		ExcludeEventData:     false,
 		ExcludeEventMessage:  false,
 		ExcludeUserData:      false,
-		Labels:               utils.ToLabelSet(map[string]string{"job": "windows"}),
+		Labels:               util.MapToModelLabelSet(map[string]string{"job": "windows"}),
 	}
-	handle := &handler{handler: make(chan api.Entry)}
-	winTarget, err := NewTarget(log.NewLogfmtLogger(os.Stderr), handle, nil, scrapeConfig, 1000*time.Millisecond)
+
+	handle := loki.NewLogsReceiver()
+	winTarget, err := NewTarget(logging.NewSlogNop(), handle, nil, scrapeConfig, 1000*time.Millisecond)
 	require.NoError(t, err)
 
 	tm := time.Now().Format(time.RFC3339Nano)
@@ -54,7 +56,7 @@ func TestBookmarkUpdate(t *testing.T) {
 	require.NoError(t, err)
 
 	select {
-	case e := <-handle.handler:
+	case e := <-handle.Chan():
 		require.Equal(t, model.LabelValue("windows"), e.Labels["job"])
 	case <-time.After(3 * time.Second):
 		require.FailNow(t, "failed waiting for event")

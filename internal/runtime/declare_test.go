@@ -7,12 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/grafana/alloy/internal/featuregate"
 	"github.com/grafana/alloy/internal/runtime"
 	"github.com/grafana/alloy/internal/runtime/internal/testcomponents"
 	"github.com/grafana/alloy/internal/runtime/logging"
 	"github.com/grafana/alloy/internal/service"
-	"github.com/stretchr/testify/require"
 )
 
 type testCase struct {
@@ -331,7 +332,8 @@ func TestDeclare(t *testing.T) {
 
 	for _, tc := range tt {
 		t.Run(tc.name, func(t *testing.T) {
-			ctrl := runtime.New(testOptions(t))
+			ctrl, err := runtime.New(testOptions(t))
+			require.NoError(t, err)
 			f, err := runtime.ParseSource(t.Name(), []byte(tc.config))
 			require.NoError(t, err)
 			require.NotNil(t, f)
@@ -349,6 +351,10 @@ func TestDeclare(t *testing.T) {
 				cancel()
 				<-done
 			}()
+
+			require.Eventually(t, func() bool {
+				return ctrl.LoadComplete()
+			}, 3*time.Second, 10*time.Millisecond)
 
 			require.Eventually(t, func() bool {
 				export := getExport[testcomponents.SummationExports](t, ctrl, "", "testcomponents.summation.sum")
@@ -373,7 +379,8 @@ func TestDeclareModulePath(t *testing.T) {
 			input = mod.myModule.output
 		}
 	`
-	ctrl := runtime.New(testOptions(t))
+	ctrl, err := runtime.New(testOptions(t))
+	require.NoError(t, err)
 	f, err := runtime.ParseSource(t.Name(), []byte(config))
 	require.NoError(t, err)
 	require.NotNil(t, f)
@@ -391,6 +398,11 @@ func TestDeclareModulePath(t *testing.T) {
 		cancel()
 		<-done
 	}()
+
+	require.Eventually(t, func() bool {
+		return ctrl.LoadComplete()
+	}, 3*time.Second, 10*time.Millisecond)
+
 	time.Sleep(30 * time.Millisecond)
 	passthrough := getExport[testcomponents.PassthroughExports](t, ctrl, "", "testcomponents.passthrough.pass")
 	require.Equal(t, passthrough.Output, "")
@@ -488,13 +500,14 @@ func TestDeclareError(t *testing.T) {
 			defer verifyNoGoroutineLeaks(t)
 			s, err := logging.New(os.Stderr, logging.DefaultOptions)
 			require.NoError(t, err)
-			ctrl := runtime.New(runtime.Options{
+			ctrl, err := runtime.New(runtime.Options{
 				Logger:       s,
 				DataPath:     t.TempDir(),
 				MinStability: featuregate.StabilityPublicPreview,
 				Reg:          nil,
 				Services:     []service.Service{},
 			})
+			require.NoError(t, err)
 			f, err := runtime.ParseSource(t.Name(), []byte(tc.config))
 			require.NoError(t, err)
 			require.NotNil(t, f)
@@ -578,7 +591,9 @@ func TestDeclareUpdateConfig(t *testing.T) {
 
 	for _, tc := range tt {
 		t.Run(tc.name, func(t *testing.T) {
-			ctrl := runtime.New(testOptions(t))
+			defer verifyNoGoroutineLeaks(t)
+			ctrl, err := runtime.New(testOptions(t))
+			require.NoError(t, err)
 			f, err := runtime.ParseSource(t.Name(), []byte(tc.config))
 			require.NoError(t, err)
 			require.NotNil(t, f)
@@ -607,8 +622,11 @@ func TestDeclareUpdateConfig(t *testing.T) {
 			require.NotNil(t, f)
 
 			// Reload the controller with the new config.
-			err = ctrl.LoadSource(f, nil, "")
-			require.NoError(t, err)
+			require.NoError(t, ctrl.LoadSource(f, nil, ""))
+
+			require.Eventually(t, func() bool {
+				return ctrl.LoadComplete()
+			}, 3*time.Second, 10*time.Millisecond)
 
 			require.Eventually(t, func() bool {
 				export := getExport[testcomponents.SummationExports](t, ctrl, "", "testcomponents.summation.sum")

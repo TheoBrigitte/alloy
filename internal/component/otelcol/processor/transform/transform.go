@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/grafana/alloy/internal/component"
 	"github.com/grafana/alloy/internal/component/otelcol"
 	otelcolCfg "github.com/grafana/alloy/internal/component/otelcol/config"
 	"github.com/grafana/alloy/internal/component/otelcol/processor"
 	"github.com/grafana/alloy/internal/featuregate"
-	"github.com/mitchellh/mapstructure"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor"
 	otelcomponent "go.opentelemetry.io/collector/component"
@@ -59,8 +59,10 @@ type Statements []string
 type ContextStatementsSlice []ContextStatements
 
 type ContextStatements struct {
-	Context    ContextID  `alloy:"context,attr"`
-	Statements Statements `alloy:"statements,attr"`
+	Context    ContextID      `alloy:"context,attr"`
+	Conditions []string       `alloy:"conditions,attr,optional"`
+	Statements Statements     `alloy:"statements,attr"`
+	ErrorMode  ottl.ErrorMode `alloy:"error_mode,attr,optional"`
 }
 
 type NoContextStatements struct {
@@ -93,7 +95,8 @@ var (
 
 // DefaultArguments holds default settings for Arguments.
 var DefaultArguments = Arguments{
-	ErrorMode: ottl.PropagateError,
+	// Matches the upstream default since v0.153 (the processor.transform.defaultErrorModeIgnore gate is on by default).
+	ErrorMode: ottl.IgnoreError,
 }
 
 // SetToDefault implements syntax.Defaulter.
@@ -124,12 +127,12 @@ func convertNoContext(stmts Statements) ContextStatementsSlice {
 	}
 }
 
-func (stmts *ContextStatementsSlice) convert() []interface{} {
+func (stmts *ContextStatementsSlice) convert() []any {
 	if stmts == nil {
 		return nil
 	}
 
-	res := make([]interface{}, 0, len(*stmts))
+	res := make([]any, 0, len(*stmts))
 
 	if len(*stmts) == 0 {
 		return res
@@ -141,14 +144,16 @@ func (stmts *ContextStatementsSlice) convert() []interface{} {
 	return res
 }
 
-func (args *ContextStatements) convert() map[string]interface{} {
+func (args *ContextStatements) convert() map[string]any {
 	if args == nil {
 		return nil
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"context":    args.Context,
 		"statements": args.Statements,
+		"conditions": args.Conditions,
+		"error_mode": args.ErrorMode,
 	}
 }
 
@@ -160,7 +165,7 @@ func (args Arguments) Convert() (otelcomponent.Config, error) {
 // convertImpl is a helper function which returns the real type of the config,
 // instead of the otelcomponent.Config interface.
 func (args Arguments) convertImpl() (*transformprocessor.Config, error) {
-	input := make(map[string]interface{})
+	input := make(map[string]any)
 
 	input["error_mode"] = args.ErrorMode
 
@@ -179,14 +184,13 @@ func (args Arguments) convertImpl() (*transformprocessor.Config, error) {
 		input["log_statements"] = args.LogStatements.convert()
 	}
 
-	var result transformprocessor.Config
-	err := mapstructure.Decode(input, &result)
-
+	cfg := transformprocessor.NewFactory().CreateDefaultConfig().(*transformprocessor.Config)
+	err := mapstructure.Decode(input, cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	return &result, nil
+	return cfg, nil
 }
 
 // Extensions implements processor.Arguments.

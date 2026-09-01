@@ -5,6 +5,8 @@ aliases:
 description: Learn about prometheus.exporter.elasticsearch
 labels:
   stage: general-availability
+  products:
+    - oss
 title: prometheus.exporter.elasticsearch
 ---
 
@@ -56,15 +58,24 @@ You can use the following arguments with `prometheus.exporter.elasticsearch`:
 
 You can use the following block with `prometheus.exporter.elasticsearch`:
 
+{{< docs/alloy-config >}}
+
 | Block                      | Description                                                | Required |
 | -------------------------- | ---------------------------------------------------------- | -------- |
 | [`basic_auth`][basic_auth] | Configure `basic_auth` for authenticating to the endpoint. | no       |
 
 [basic_auth]: #basic_auth
 
+{{< /docs/alloy-config >}}
+
 ### `basic_auth`
 
 {{< docs/shared lookup="reference/components/basic-auth-block.md" source="alloy" version="<ALLOY_VERSION>" >}}
+
+{{< admonition type="note" >}}
+`prometheus.exporter.elasticsearch` reads `password_file` once when it starts or reloads its configuration.
+It doesn't read the file on every outgoing request.
+{{< /admonition >}}
 
 ## Exported fields
 

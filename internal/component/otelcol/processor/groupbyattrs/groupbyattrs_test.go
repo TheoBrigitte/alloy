@@ -6,7 +6,7 @@ import (
 	"github.com/grafana/alloy/internal/component/otelcol/processor/groupbyattrs"
 	"github.com/grafana/alloy/syntax"
 
-	"github.com/mitchellh/mapstructure"
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/groupbyattrsprocessor"
 	"github.com/stretchr/testify/require"
 )
@@ -15,7 +15,7 @@ func TestArguments_UnmarshalAlloy(t *testing.T) {
 	tests := []struct {
 		testName string
 		cfg      string
-		expected map[string]interface{}
+		expected map[string]any
 		errMsg   string
 	}{
 		{
@@ -23,7 +23,7 @@ func TestArguments_UnmarshalAlloy(t *testing.T) {
 			cfg: `
 			output {}
 			`,
-			expected: map[string]interface{}{
+			expected: map[string]any{
 				"keys": []string{},
 			},
 		},
@@ -33,7 +33,7 @@ func TestArguments_UnmarshalAlloy(t *testing.T) {
 			keys = ["key1"]
 			output {}
 			`,
-			expected: map[string]interface{}{
+			expected: map[string]any{
 				"keys": []string{
 					"key1",
 				},
@@ -45,7 +45,7 @@ func TestArguments_UnmarshalAlloy(t *testing.T) {
 			keys = ["key1", "key2"]
 			output {}
 			`,
-			expected: map[string]interface{}{
+			expected: map[string]any{
 				"keys": []string{
 					"key1",
 					"key2",

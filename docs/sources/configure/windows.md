@@ -115,5 +115,10 @@ To expose the UI to other machines, complete the following steps:
 
      To listen on all interfaces, replace _`<LISTEN_ADDR>`_ with `0.0.0.0`.
 
+## Set Windows service access and permissions
+
+For guidance on running {{< param "PRODUCT_NAME" >}} with a dedicated service account, configuring Windows security group membership, and setting filesystem permissions, refer to [Access and permissions for {{< param "PRODUCT_NAME" >}} on Windows][access-windows].
+
 [UI]: ../../troubleshoot/debug/#alloy-ui
 [environment]: ../../reference/cli/environment-variables/
+[access-windows]: ../../access_permissions/windows/

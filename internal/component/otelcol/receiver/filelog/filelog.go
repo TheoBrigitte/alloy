@@ -12,10 +12,11 @@ import (
 	"github.com/grafana/alloy/internal/component/otelcol"
 	otelcolCfg "github.com/grafana/alloy/internal/component/otelcol/config"
 	"github.com/grafana/alloy/internal/component/otelcol/extension"
+	"github.com/grafana/alloy/internal/component/otelcol/internal/textutils"
 	"github.com/grafana/alloy/internal/component/otelcol/receiver"
 	"github.com/grafana/alloy/internal/featuregate"
 	"github.com/hashicorp/go-multierror"
-	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/stanza/decode"
+
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/stanza/fileconsumer"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/stanza/fileconsumer/attrs"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/stanza/fileconsumer/matcher"
@@ -54,6 +55,7 @@ type Arguments struct {
 	IncludeFileRecordNumber bool                     `alloy:"include_file_record_number,attr,optional"`
 	Compression             string                   `alloy:"compression,attr,optional"`
 	AcquireFSLock           bool                     `alloy:"acquire_fs_lock,attr,optional"`
+	FileCacheAdvise         bool                     `alloy:"file_cache_advise,attr,optional"`
 	MultilineConfig         *otelcol.MultilineConfig `alloy:"multiline,block,optional"`
 	TrimConfig              *otelcol.TrimConfig      `alloy:",squash"`
 	Header                  *HeaderConfig            `alloy:"header,block,optional"`
@@ -88,6 +90,7 @@ type Resolver struct {
 	IncludeFilePathResolved   bool `alloy:"include_file_path_resolved,attr,optional"`
 	IncludeFileOwnerName      bool `alloy:"include_file_owner_name,attr,optional"`
 	IncludeFileOwnerGroupName bool `alloy:"include_file_owner_group_name,attr,optional"`
+	IncludeFilePermissions    bool `alloy:"include_file_permissions,attr,optional"`
 }
 
 type MatchCriteria struct {
@@ -170,6 +173,7 @@ func (args Arguments) Convert() (otelcomponent.Config, error) {
 	cfg.InputConfig.IncludeFileRecordNumber = args.IncludeFileRecordNumber
 	cfg.InputConfig.Compression = args.Compression
 	cfg.InputConfig.AcquireFSLock = args.AcquireFSLock
+	cfg.InputConfig.FileCacheAdvise = args.FileCacheAdvise
 
 	if len(args.Attributes) > 0 {
 		cfg.InputConfig.Attributes = make(map[string]helper.ExprStringConfig, len(args.Attributes))
@@ -280,7 +284,7 @@ func (args *Arguments) Validate() error {
 		errs = multierror.Append(errs, errors.New("'delete_after_read' cannot be used with 'start_at = end'"))
 	}
 
-	_, err := decode.LookupEncoding(args.Encoding) //nolint:staticcheck // TODO: deprecated, internal only, will have to vendor the list
+	_, err := textutils.LookupEncoding(args.Encoding)
 	if err != nil {
 		errs = multierror.Append(errs, fmt.Errorf("invalid 'encoding': %w", err))
 	}
@@ -297,7 +301,7 @@ func (args *Arguments) Validate() error {
 		}
 	}
 
-	if args.Compression != "" && args.Compression != "gzip" {
+	if args.Compression != "" && args.Compression != "gzip" && args.Compression != "auto" {
 		errs = multierror.Append(errs, fmt.Errorf("invalid 'compression' type: %s", args.Compression))
 	}
 

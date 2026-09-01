@@ -5,6 +5,8 @@ aliases:
 description: Learn about discovery.nomad
 labels:
   stage: general-availability
+  products:
+    - oss
 title: discovery.nomad
 ---
 
@@ -23,39 +25,40 @@ discovery.nomad "<LABEL>" {
 
 You can use the following arguments with `discovery.nomad`:
 
-| Name                     | Type                | Description                                                                                      | Default                 | Required |
-| ------------------------ | ------------------- | ------------------------------------------------------------------------------------------------ | ----------------------- | -------- |
-| `allow_stale`            | `bool`              | Allow reading from non-leader nomad instances.                                                   | `true`                  | no       |
-| `bearer_token_file`      | `string`            | File containing a bearer token to authenticate with.                                             |                         | no       |
-| `bearer_token`           | `secret`            | Bearer token to authenticate with.                                                               |                         | no       |
-| `enable_http2`           | `bool`              | Whether HTTP2 is supported for requests.                                                         | `true`                  | no       |
-| `follow_redirects`       | `bool`              | Whether redirects returned by the server should be followed.                                     | `true`                  | no       |
-| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |                      | no       |
-| `namespace`              | `string`            | Nomad namespace to use.                                                                          | `default`               | no       |
-| `no_proxy`               | `string`            | Comma-separated list of IP addresses, CIDR notations, and domain names to exclude from proxying. |                         | no       |
-| `proxy_connect_header`   | `map(list(secret))` | Specifies headers to send to proxies during CONNECT requests.                                    |                         | no       |
-| `proxy_from_environment` | `bool`              | Use the proxy URL indicated by environment variables.                                            | `false`                 | no       |
-| `proxy_url`              | `string`            | HTTP proxy to send requests through.                                                             |                         | no       |
-| `refresh_interval`       | `duration`          | Frequency to refresh list of containers.                                                         | `"30s"`                 | no       |
-| `region`                 | `string`            | Nomad region to use.                                                                             | `global`                | no       |
-| `server`                 | `string`            | Address of nomad server.                                                                         | `http://localhost:4646` | no       |
-| `tag_separator`          | `string`            | Separator to join nomad tags into Prometheus labels.                                             | `,`                     | no       |
+| Name                     | Type                | Description                                                                                      | Default                   | Required |
+| ------------------------ | ------------------- | ------------------------------------------------------------------------------------------------ | ------------------------- | -------- |
+| `allow_stale`            | `bool`              | Allow reading from non-leader nomad instances.                                                   | `true`                    | no       |
+| `bearer_token_file`      | `string`            | File containing a bearer token to authenticate with.                                             |                           | no       |
+| `bearer_token`           | `secret`            | Bearer token to authenticate with.                                                               |                           | no       |
+| `enable_http2`           | `bool`              | Whether HTTP2 is supported for requests.                                                         | `true`                    | no       |
+| `follow_redirects`       | `bool`              | Whether redirects returned by the server should be followed.                                     | `true`                    | no       |
+| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |                           | no       |
+| `namespace`              | `string`            | Nomad namespace to use.                                                                          | `default`                 | no       |
+| `no_proxy`               | `string`            | Comma-separated list of IP addresses, CIDR notations, and domain names to exclude from proxying. |                           | no       |
+| `proxy_connect_header`   | `map(list(secret))` | Specifies headers to send to proxies during CONNECT requests.                                    |                           | no       |
+| `proxy_from_environment` | `bool`              | Use the proxy URL indicated by environment variables.                                            | `false`                   | no       |
+| `proxy_url`              | `string`            | HTTP proxy to send requests through.                                                             |                           | no       |
+| `refresh_interval`       | `duration`          | Frequency to refresh list of containers.                                                         | `"30s"`                   | no       |
+| `region`                 | `string`            | Nomad region to use.                                                                             | `global`                  | no       |
+| `server`                 | `string`            | Address of nomad server.                                                                         | `"http://localhost:4646"` | no       |
+| `tag_separator`          | `string`            | Separator to join nomad tags into Prometheus labels.                                             | `","`                     | no       |
 
  At most, one of the following can be provided:
 
-* [`authorization`][authorization] block
-* [`basic_auth`][basic_auth] block
-* [`bearer_token_file`][arguments] argument
-* [`bearer_token`][arguments] argument
-* [`oauth2`][oauth2] block
+* [`authorization`](#authorization) block
+* [`basic_auth`](#basic_auth) block
+* [`bearer_token_file`](#arguments) argument
+* [`bearer_token`](#arguments) argument
+* [`oauth2`](#oauth2) block
 
-[arguments]: #arguments
 
 {{< docs/shared lookup="reference/components/http-client-proxy-config-description.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
 ## Blocks
 
 You can use the following blocks with `discovery.nomad`:
+
+{{< docs/alloy-config >}}
 
 | Block                                 | Description                                                | Required |
 | ------------------------------------- | ---------------------------------------------------------- | -------- |
@@ -65,13 +68,12 @@ You can use the following blocks with `discovery.nomad`:
 | `oauth2` > [`tls_config`][tls_config] | Configure TLS settings for connecting to the endpoint.     | no       |
 | [`tls_config`][tls_config]            | Configure TLS settings for connecting to the endpoint.     | no       |
 
-The > symbol indicates deeper levels of nesting.
-For example, `oauth2` > `tls_config` refers to a `tls_config` block defined inside an `oauth2` block.
-
 [authorization]: #authorization
 [basic_auth]: #basic_auth
 [oauth2]: #oauth2
 [tls_config]: #tls_config
+
+{{< /docs/alloy-config >}}
 
 ### `authorization`
 

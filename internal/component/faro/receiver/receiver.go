@@ -3,14 +3,14 @@ package receiver
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
-	"github.com/go-kit/log"
 	"github.com/go-sourcemap/sourcemap"
+
 	"github.com/grafana/alloy/internal/component"
 	"github.com/grafana/alloy/internal/featuregate"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 )
 
 func init() {
@@ -26,7 +26,7 @@ func init() {
 }
 
 type Component struct {
-	log               log.Logger
+	log               *slog.Logger
 	handler           *handler
 	lazySourceMaps    *varSourceMapsStore
 	sourceMapsMetrics *sourceMapMetrics
@@ -54,14 +54,14 @@ func New(o component.Options, args Arguments) (*Component, error) {
 		varStore = &varSourceMapsStore{}
 
 		metrics = newMetricsExporter(o.Registerer)
-		logs    = newLogsExporter(log.With(o.Logger, "exporter", "logs"), varStore, args.LogFormat)
-		traces  = newTracesExporter(log.With(o.Logger, "exporter", "traces"))
+		logs    = newLogsExporter(o.Logger.With("exporter", "logs"), varStore, args.LogFormat)
+		traces  = newTracesExporter()
 	)
 
 	c := &Component{
 		log: o.Logger,
 		handler: newHandler(
-			log.With(o.Logger, "subcomponent", "handler"),
+			o.Logger.With("subcomponent", "handler"),
 			o.Registerer,
 			[]exporter{metrics, logs, traces},
 		),
@@ -131,13 +131,20 @@ func (c *Component) Update(args component.Arguments) error {
 
 	c.handler.Update(newArgs.Server)
 
-	c.lazySourceMaps.SetInner(newSourceMapsStore(
-		log.With(c.log, "subcomponent", "handler"),
+	// Stop old store's cleanup if there is one
+	c.lazySourceMaps.Stop()
+
+	innerStore := newSourceMapsStore(
+		c.log.With("subcomponent", "handler"),
 		newArgs.SourceMaps,
 		c.sourceMapsMetrics,
 		nil, // Use default HTTP client.
 		nil, // Use default FS implementation.
-	))
+	)
+	c.lazySourceMaps.SetInner(innerStore)
+
+	// Start cleanup for new store
+	c.lazySourceMaps.Start()
 
 	c.logs.SetReceivers(newArgs.Output.Logs)
 	c.traces.SetConsumers(newArgs.Output.Traces)
@@ -154,8 +161,17 @@ func (c *Component) Update(args component.Arguments) error {
 		)
 		c.argsMut.RUnlock()
 
+		var cleanupWg sync.WaitGroup
+
+		// Start cleanup routine if per-app rate limiting is enabled
+		if c.handler.appRateLimiter != nil {
+			cleanupWg.Go(func() {
+				c.handler.appRateLimiter.CleanupRoutine(ctx, DEFAULT_CLEANUP_INTERVAL)
+			})
+		}
+
 		srv := newServer(
-			log.With(c.log, "subcomponent", "server"),
+			c.log.With("subcomponent", "server"),
 			args.Server,
 			c.serverMetrics,
 			c.handler,
@@ -166,9 +182,11 @@ func (c *Component) Update(args component.Arguments) error {
 
 		err := srv.Run(ctx)
 		if err != nil {
-			level.Error(c.log).Log("msg", "server exited with error", "err", err)
+			c.log.Error("server exited with error", "err", err)
 			c.setServerHealth(err)
 		}
+
+		cleanupWg.Wait()
 	}
 
 	select {
@@ -231,4 +249,22 @@ func (vs *varSourceMapsStore) SetInner(inner sourceMapsStore) {
 	defer vs.mut.Unlock()
 
 	vs.inner = inner
+}
+
+func (vs *varSourceMapsStore) Start() {
+	vs.mut.RLock()
+	defer vs.mut.RUnlock()
+
+	if vs.inner != nil {
+		vs.inner.Start()
+	}
+}
+
+func (vs *varSourceMapsStore) Stop() {
+	vs.mut.RLock()
+	defer vs.mut.RUnlock()
+
+	if vs.inner != nil {
+		vs.inner.Stop()
+	}
 }

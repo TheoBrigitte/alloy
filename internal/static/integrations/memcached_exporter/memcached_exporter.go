@@ -2,18 +2,17 @@
 package memcached_exporter
 
 import (
+	"crypto/tls"
+	"log/slog"
 	"time"
 
-	"crypto/tls"
-
 	config_util "github.com/prometheus/common/config"
+	"github.com/prometheus/memcached_exporter/pkg/exporter"
 
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
+	"github.com/grafana/alloy/internal/slogadapter"
 	"github.com/grafana/alloy/internal/static/integrations"
 	integrations_v2 "github.com/grafana/alloy/internal/static/integrations/v2"
 	"github.com/grafana/alloy/internal/static/integrations/v2/metricsutils"
-	"github.com/prometheus/memcached_exporter/pkg/exporter"
 )
 
 // DefaultConfig is the default config for memcached_exporter.
@@ -35,7 +34,7 @@ type Config struct {
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler for Config.
-func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (c *Config) UnmarshalYAML(unmarshal func(any) error) error {
 	*c = DefaultConfig
 
 	type plain Config
@@ -48,12 +47,12 @@ func (c *Config) Name() string {
 }
 
 // InstanceKey returns the address:port of the memcached server.
-func (c *Config) InstanceKey(agentKey string) (string, error) {
+func (c *Config) InstanceKey(_ string) (string, error) {
 	return c.MemcachedAddress, nil
 }
 
 // NewIntegration converts this config into an instance of an integration.
-func (c *Config) NewIntegration(l log.Logger) (integrations.Integration, error) {
+func (c *Config) NewIntegration(l *slog.Logger) (integrations.Integration, error) {
 	return New(l, c)
 }
 
@@ -64,7 +63,7 @@ func init() {
 
 // New creates a new memcached_exporter integration. The integration scrapes metrics
 // from a memcached server.
-func New(log log.Logger, c *Config) (integrations.Integration, error) {
+func New(log *slog.Logger, c *Config) (integrations.Integration, error) {
 	var tlsConfig *tls.Config
 	var err error
 	// NewTLSConfig uses Validate, which does not have a check if the config is nil,
@@ -72,7 +71,7 @@ func New(log log.Logger, c *Config) (integrations.Integration, error) {
 	if c.TLSConfig != nil {
 		tlsConfig, err = config_util.NewTLSConfig(c.TLSConfig)
 		if err != nil {
-			level.Error(log).Log("msg", "invalid tls_config", "err", err)
+			log.Error("invalid tls_config", "err", err)
 			return nil, err
 		}
 	}
@@ -82,7 +81,7 @@ func New(log log.Logger, c *Config) (integrations.Integration, error) {
 		integrations.WithCollectors(
 			// The memcached client does check if the tlsConfig is nil, so passing
 			// nil here is fine.
-			exporter.New(c.MemcachedAddress, c.Timeout, log, tlsConfig),
+			exporter.New(c.MemcachedAddress, c.Timeout, slogadapter.GoKit(log.Handler()), tlsConfig),
 		),
 	), nil
 }

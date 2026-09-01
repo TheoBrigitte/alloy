@@ -7,13 +7,12 @@ import (
 
 	"github.com/grafana/alloy/internal/component"
 	"github.com/grafana/alloy/internal/featuregate"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 )
 
 func init() {
 	component.Register(component.Registration{
 		Name:      "beyla.ebpf",
-		Stability: featuregate.StabilityPublicPreview,
+		Stability: featuregate.StabilityGenerallyAvailable,
 		Args:      Arguments{},
 		Exports:   Exports{},
 
@@ -29,7 +28,7 @@ type Component struct {
 }
 
 func New(opts component.Options, args Arguments) (component.Component, error) {
-	level.Warn(opts.Logger).Log("msg", "the beyla.ebpf component only works on ARM64 and AMD64 Linux platforms; enabling it otherwise will do nothing")
+	opts.Logger.Warn("the beyla.ebpf component only works on ARM64 and AMD64 Linux platforms; enabling it otherwise will do nothing")
 	return &Component{}, nil
 }
 

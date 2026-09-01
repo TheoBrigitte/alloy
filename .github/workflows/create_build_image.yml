@@ -11,16 +11,12 @@ permissions:
 jobs:
   linux_build_image:
     name: Create a Linux build image
-    strategy:
-      matrix:
-        build:
-          - runtime: golang:1.24.1-alpine3.21
-          - runtime: mcr.microsoft.com/oss/go/microsoft/golang:1.24.1-bookworm
-            suffix: "-boringcrypto"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-8-cores
     steps:
     - name: Checkout code
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      with:
+        persist-credentials: false
 
     - name: Remove unnecessary files
       run: |
@@ -34,23 +30,25 @@ jobs:
       env:
         FULL_TAG: ${{ github.ref_name }}
       id: get_image_version
-      run: echo "image_tag=${FULL_TAG##*/}${{ matrix.build.suffix }}" >> $GITHUB_OUTPUT
+      run: echo "image_tag=${FULL_TAG##*/}" >> $GITHUB_OUTPUT
 
-    - name: Login to DockerHub (from vault)
-      uses: grafana/shared-workflows/actions/dockerhub-login@13fb504e3bfe323c1188bf244970d94b2d336e86 # dockerhub-login-v1.0.1
+    - name: Login to Google Artifact Registry
+      uses: grafana/shared-workflows/actions/login-to-gar@1f541877ceb22c7be7667d8a8df04984aeac9f9d # login-to-gar/v1.0.3
+      with:
+        registry: us-docker.pkg.dev
 
     - name: Setup QEMU
-      uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+      uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+      uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
     - name: Create Linux build image
-      uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
+      uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
       with:
         platforms: linux/amd64,linux/arm64
-        context: ./tools/build-image
+        context: ./build-tools/build-image
         push: true
-        tags: grafana/alloy-build-image:${{ steps.get_image_version.outputs.image_tag }}
+        tags: us-docker.pkg.dev/grafanalabs-global/dockerhub-alloy-prod-mirror/alloy-build-image:${{ steps.get_image_version.outputs.image_tag }}
         build-args: |
-          GO_RUNTIME=${{ matrix.build.runtime }}
+          GO_RUNTIME=golang:1.26.7-alpine3.23

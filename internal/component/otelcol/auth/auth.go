@@ -10,22 +10,22 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
-	"os"
 	"strings"
 
-	"github.com/grafana/alloy/internal/build"
-	"github.com/grafana/alloy/internal/component"
-	otelcolCfg "github.com/grafana/alloy/internal/component/otelcol/config"
-	"github.com/grafana/alloy/internal/component/otelcol/internal/lazycollector"
-	"github.com/grafana/alloy/internal/component/otelcol/internal/scheduler"
-	"github.com/grafana/alloy/internal/util/zapadapter"
-	"github.com/grafana/alloy/syntax"
 	"github.com/prometheus/client_golang/prometheus"
 	otelcomponent "go.opentelemetry.io/collector/component"
 	otelextension "go.opentelemetry.io/collector/extension"
 	"go.opentelemetry.io/collector/pipeline"
 	sdkprometheus "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/sdk/metric"
+
+	"github.com/grafana/alloy/internal/component"
+	otelcolCfg "github.com/grafana/alloy/internal/component/otelcol/config"
+	"github.com/grafana/alloy/internal/component/otelcol/internal/lazycollector"
+	"github.com/grafana/alloy/internal/component/otelcol/internal/scheduler"
+	otelcolutil "github.com/grafana/alloy/internal/component/otelcol/util"
+	"github.com/grafana/alloy/internal/slogadapter"
+	"github.com/grafana/alloy/syntax"
 )
 
 var (
@@ -159,8 +159,8 @@ type Auth struct {
 	opts    component.Options
 	factory otelextension.Factory
 
-	sched     *scheduler.Scheduler
 	collector *lazycollector.Collector
+	sched     *scheduler.AuthExtensionScheduler
 }
 
 var (
@@ -189,7 +189,7 @@ func New(opts component.Options, f otelextension.Factory, args Arguments) (*Auth
 		opts:    opts,
 		factory: f,
 
-		sched:     scheduler.New(opts.Logger),
+		sched:     scheduler.NewAuthExtensionScheduler(opts.Logger),
 		collector: collector,
 	}
 	if err := r.Update(args); err != nil {
@@ -200,8 +200,12 @@ func New(opts component.Options, f otelextension.Factory, args Arguments) (*Auth
 
 // Run starts the Auth component.
 func (a *Auth) Run(ctx context.Context) error {
-	defer a.cancel()
-	return a.sched.Run(ctx)
+	defer func() {
+		a.cancel()
+		a.sched.Stop()
+	}()
+	<-ctx.Done()
+	return nil
 }
 
 // Update implements component.Component. It will convert the Arguments into
@@ -211,7 +215,6 @@ func (a *Auth) Update(args component.Arguments) error {
 	rargs := args.(Arguments)
 
 	host := scheduler.NewHost(
-		a.opts.Logger,
 		scheduler.WithHostExtensions(rargs.Extensions()),
 		scheduler.WithHostExporters(rargs.Exporters()),
 	)
@@ -228,18 +231,19 @@ func (a *Auth) Update(args component.Arguments) error {
 	settings := otelextension.Settings{
 		ID: otelcomponent.NewIDWithName(a.factory.Type(), a.opts.ID),
 		TelemetrySettings: otelcomponent.TelemetrySettings{
-			Logger: zapadapter.New(a.opts.Logger),
-
+			Logger:         slogadapter.NewZap(a.opts.Logger),
 			TracerProvider: a.opts.Tracer,
 			MeterProvider:  mp,
 		},
 
-		BuildInfo: otelcomponent.BuildInfo{
-			Command:     os.Args[0],
-			Description: "Grafana Alloy",
-			Version:     build.Version,
-		},
+		BuildInfo: otelcolutil.GetBuildInfo(),
 	}
+
+	resource, err := otelcolutil.GetTelemetrySettingsResource()
+	if err != nil {
+		return err
+	}
+	settings.TelemetrySettings.Resource = resource
 
 	// Create instances of the extension from our factory.
 	var components []otelcomponent.Component
@@ -259,6 +263,9 @@ func (a *Auth) Update(args component.Arguments) error {
 
 	// If the extension supports client auth schedule it.
 	if HasAuthFeature(authFeature, ClientAuthSupported) {
+		// FIXME(kalleep): It should be possible only start
+		// either client or server auth depending on config.
+		// https://github.com/grafana/alloy/issues/5793
 		components = append(components, clientEh.Extension)
 	}
 
@@ -275,6 +282,9 @@ func (a *Auth) Update(args component.Arguments) error {
 
 	// If the extension supports server auth schedule it.
 	if HasAuthFeature(authFeature, ServerAuthSupported) {
+		// FIXME(kalleep): It should be possible only start
+		// either client or server auth depending on config.
+		// https://github.com/grafana/alloy/issues/5793
 		components = append(components, serverEh.Extension)
 	}
 
@@ -283,14 +293,12 @@ func (a *Auth) Update(args component.Arguments) error {
 		return err
 	}
 
-	// Inform listeners that our handler changed.
-	a.opts.OnStateChange(Exports{
-		Handler: handler,
-	},
-	)
+	// Schedule the components, start will be called directly.
+	a.sched.Schedule(a.ctx, host, components...)
 
-	// Schedule the components to run once our component is running.
-	a.sched.Schedule(a.ctx, func() {}, host, components...)
+	// Inform listeners that our handler changed.
+	a.opts.OnStateChange(Exports{Handler: handler})
+
 	return nil
 }
 

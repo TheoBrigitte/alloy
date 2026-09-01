@@ -10,7 +10,6 @@ import (
 	"github.com/grafana/alloy/internal/component/common/loki"
 	alloy_relabel "github.com/grafana/alloy/internal/component/common/relabel"
 	"github.com/grafana/alloy/internal/featuregate"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 	"github.com/grafana/alloy/internal/service/livedebugging"
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/prometheus/common/model"
@@ -60,26 +59,28 @@ type Exports struct {
 	Rules    alloy_relabel.Rules `alloy:"rules,attr"`
 }
 
-// Component implements the loki.relabel component.
-type Component struct {
-	opts    component.Options
-	metrics *metrics
-
-	mut      sync.RWMutex
-	rcs      []*relabel.Config
-	receiver loki.LogsReceiver
-	fanout   []loki.LogsReceiver
-
-	cache        *lru.Cache
-	maxCacheSize int
-
-	debugDataPublisher livedebugging.DebugDataPublisher
-}
-
 var (
 	_ component.Component     = (*Component)(nil)
 	_ component.LiveDebugging = (*Component)(nil)
 )
+
+// Component implements the loki.relabel component.
+type Component struct {
+	opts    component.Options
+	metrics *metrics
+	cache   *lru.Cache
+
+	receiver    loki.LogsReceiver
+	fanout      *loki.Fanout
+	interceptor *loki.InterceptorConsumer
+
+	mut          sync.RWMutex
+	stopped      bool
+	rcs          []*relabel.Config
+	maxCacheSize int
+
+	debugDataPublisher livedebugging.DebugDataPublisher
+}
 
 // New creates a new loki.relabel component.
 func New(o component.Options, args Arguments) (*Component, error) {
@@ -99,14 +100,55 @@ func New(o component.Options, args Arguments) (*Component, error) {
 		cache:              cache,
 		maxCacheSize:       args.MaxCacheSize,
 		debugDataPublisher: debugDataPublisher.(livedebugging.DebugDataPublisher),
+		fanout:             loki.NewFanout(args.ForwardTo),
+		receiver:           loki.NewLogsReceiver(loki.WithComponentID(o.ID)),
 	}
 
-	// Create and immediately export the receiver which remains the same for
-	// the component's lifetime.
-	c.receiver = loki.NewLogsReceiver()
-	o.OnStateChange(Exports{Receiver: c.receiver, Rules: args.RelabelConfigs})
+	c.interceptor = loki.NewInterceptorConsumer(
+		o.ID,
+		// FIXME(kalleep): Forward entries through consumer interface once we have migrated at pipeline level.
+		// See https://github.com/grafana/alloy/issues/4953
+		loki.NewNopConsumer(),
+		func(ctx context.Context, batch loki.Batch) (loki.Batch, error) {
+			c.mut.RLock()
+			defer c.mut.RUnlock()
 
-	// Call to Update() to set the relabelling rules once at the start.
+			if c.stopped {
+				return loki.Batch{}, loki.ErrConsumerStopped
+			}
+
+			c.metrics.entriesProcessed.Add(float64(batch.EntryLen()))
+
+			batch.FilterMapStreams(func(stream *loki.Stream) bool {
+				relabeled, ok := c.relabel(stream.Labels)
+
+				var count uint64
+				if ok {
+					count = uint64(len(stream.Entries))
+				}
+
+				c.debugDataPublisher.PublishIfActive(livedebugging.NewData(
+					livedebugging.ComponentID(c.opts.ID),
+					livedebugging.LokiLog,
+					count,
+					func() string {
+						if !ok {
+							return fmt.Sprintf("stream: %s => <dropped>", stream.Labels.String())
+						}
+						return fmt.Sprintf("stream: %s => %s", stream.Labels.String(), relabeled.String())
+					},
+				))
+
+				stream.Labels = relabeled
+				return ok
+			})
+
+			c.metrics.entriesOutgoing.Add(float64(batch.EntryLen()))
+			return batch, nil
+		},
+	)
+
+	// Call to Update() to set the relabelling rules once at the start and export rules and receiver.
 	if err := c.Update(args); err != nil {
 		return nil, err
 	}
@@ -116,44 +158,44 @@ func New(o component.Options, args Arguments) (*Component, error) {
 
 // Run implements component.Component.
 func (c *Component) Run(ctx context.Context) error {
-	componentID := livedebugging.ComponentID(c.opts.ID)
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case entry := <-c.receiver.Chan():
-			c.metrics.entriesProcessed.Inc()
-			lbls := c.relabel(entry)
+	defer func() {
+		c.mut.Lock()
+		defer c.mut.Unlock()
+		c.stopped = true
+	}()
 
-			count := uint64(1)
-			if len(lbls) == 0 {
-				count = 0 // if no labels are left, the count is not incremented because the log will be filtered out
-			}
-			c.debugDataPublisher.PublishIfActive(livedebugging.NewData(
-				componentID,
-				livedebugging.LokiLog,
-				count,
-				func() string {
-					return fmt.Sprintf("entry: %s, labels: %s => %s", entry.Line, entry.Labels.String(), lbls.String())
-				},
-			))
+	loki.ConsumeAndProcess(ctx, c.receiver, c.fanout, func(entry loki.Entry) (loki.Entry, bool) {
+		c.mut.RLock()
+		defer c.mut.RUnlock()
+		c.metrics.entriesProcessed.Inc()
 
-			if len(lbls) == 0 {
-				level.Debug(c.opts.Logger).Log("msg", "dropping entry after relabeling", "labels", entry.Labels.String())
-				continue
-			}
-
-			c.metrics.entriesOutgoing.Inc()
-			entry.Labels = lbls
-			for _, f := range c.fanout {
-				select {
-				case <-ctx.Done():
-					return nil
-				case f.Chan() <- entry:
-				}
-			}
+		relabeled, ok := c.relabel(entry.Labels)
+		count := uint64(1)
+		if !ok {
+			count = 0
 		}
-	}
+		c.debugDataPublisher.PublishIfActive(livedebugging.NewData(
+			livedebugging.ComponentID(c.opts.ID),
+			livedebugging.LokiLog,
+			count,
+			func() string {
+				if !ok {
+					return fmt.Sprintf("entry: %s, labels: %s => <dropped>", entry.Line, entry.Labels.String())
+				}
+				return fmt.Sprintf("entry: %s, labels: %s => %s", entry.Line, entry.Labels.String(), relabeled.String())
+			},
+		))
+
+		if !ok {
+			c.opts.Logger.Debug("dropping entry after relabeling", "labels", entry.Labels.String())
+			return loki.Entry{}, false
+		}
+
+		c.metrics.entriesOutgoing.Inc()
+		entry.Labels = relabeled
+		return entry, true
+	})
+	return nil
 }
 
 // Update implements component.Component.
@@ -164,23 +206,93 @@ func (c *Component) Update(args component.Arguments) error {
 	newArgs := args.(Arguments)
 	newRCS := alloy_relabel.ComponentToPromRelabelConfigs(newArgs.RelabelConfigs)
 	if relabelingChanged(c.rcs, newRCS) {
-		level.Debug(c.opts.Logger).Log("msg", "received new relabel configs, purging cache")
+		c.opts.Logger.Debug("received new relabel configs, purging cache")
 		c.cache.Purge()
 		c.metrics.cacheSize.Set(0)
 	}
 	if newArgs.MaxCacheSize != c.maxCacheSize {
-		evicted := c.cache.Resize(newArgs.MaxCacheSize)
+		c.maxCacheSize = newArgs.MaxCacheSize
+		evicted := c.cache.Resize(c.maxCacheSize)
 		if evicted > 0 {
-			level.Debug(c.opts.Logger).Log("msg", "resizing the cache lead to evicting of items", "len_items_evicted", evicted)
+			c.opts.Logger.Debug("resizing the cache led to evicting items", "len_items_evicted", evicted)
 		}
 	}
 	c.rcs = newRCS
-	c.fanout = newArgs.ForwardTo
-
+	c.fanout.UpdateChildren(newArgs.ForwardTo)
 	c.opts.OnStateChange(Exports{Receiver: c.receiver, Rules: newArgs.RelabelConfigs})
 
 	return nil
 }
+
+type cacheItem struct {
+	original  model.LabelSet
+	relabeled model.LabelSet
+}
+
+// TODO(@tpaschalis) It's unfortunate how we have to cast back and forth
+// between model.LabelSet (map) and labels.Labels (slice). Promtail does
+// not have this issue as relabel config rules are only applied to targets.
+// Do we want to use labels.Labels in loki.Entry instead?
+func (c *Component) relabel(lset model.LabelSet) (model.LabelSet, bool) {
+	hash := lset.Fingerprint()
+
+	// Let's look in the cache for the hash of the entry's labels.
+	val, found := c.cache.Get(hash)
+
+	// We've seen this hash before; let's see if we've already relabeled this
+	// specific entry before and can return early, or if it's a collision.
+	if found {
+		for _, ci := range val.([]cacheItem) {
+			if lset.Equal(ci.original) {
+				c.metrics.cacheHits.Inc()
+				if len(ci.relabeled) == 0 {
+					return nil, false
+				}
+				return ci.relabeled, true
+			}
+		}
+	}
+
+	// Seems like it's either a new entry or a hash collision.
+	c.metrics.cacheMisses.Inc()
+	relabeled := c.process(lset)
+
+	// In case it's a new hash, initialize it as a new cacheItem.
+	// If it was a collision, append the result to the cached slice.
+	if !found {
+		val = []cacheItem{{lset, relabeled}}
+	} else {
+		val = append(val.([]cacheItem), cacheItem{lset, relabeled})
+	}
+
+	c.cache.Add(hash, val)
+	c.metrics.cacheSize.Set(float64(c.cache.Len()))
+
+	if len(relabeled) == 0 {
+		return nil, false
+	}
+
+	return relabeled, true
+}
+
+func (c *Component) process(lset model.LabelSet) model.LabelSet {
+	br := labels.NewBuilder(labels.EmptyLabels())
+	for k, v := range lset {
+		br.Set(string(k), string(v))
+	}
+
+	if !relabel.ProcessBuilder(br, c.rcs...) {
+		return nil
+	}
+
+	relabeled := make(model.LabelSet, len(lset))
+	br.Range(func(lbl labels.Label) {
+		relabeled[model.LabelName(lbl.Name)] = model.LabelValue(lbl.Value)
+	})
+	return relabeled
+}
+
+func (c *Component) LiveDebugging() {}
 
 func relabelingChanged(prev, next []*relabel.Config) bool {
 	if len(prev) != len(next) {
@@ -193,66 +305,3 @@ func relabelingChanged(prev, next []*relabel.Config) bool {
 	}
 	return false
 }
-
-type cacheItem struct {
-	original  model.LabelSet
-	relabeled model.LabelSet
-}
-
-// TODO(@tpaschalis) It's unfortunate how we have to cast back and forth
-// between model.LabelSet (map) and labels.Labels (slice). Promtail does
-// not have this issue as relabel config rules are only applied to targets.
-// Do we want to use labels.Labels in loki.Entry instead?
-func (c *Component) relabel(e loki.Entry) model.LabelSet {
-	hash := e.Labels.Fingerprint()
-
-	// Let's look in the cache for the hash of the entry's labels.
-	val, found := c.cache.Get(hash)
-
-	// We've seen this hash before; let's see if we've already relabeled this
-	// specific entry before and can return early, or if it's a collision.
-	if found {
-		for _, ci := range val.([]cacheItem) {
-			if e.Labels.Equal(ci.original) {
-				c.metrics.cacheHits.Inc()
-				return ci.relabeled
-			}
-		}
-	}
-
-	// Seems like it's either a new entry or a hash collision.
-	c.metrics.cacheMisses.Inc()
-	relabeled := c.process(e)
-
-	// In case it's a new hash, initialize it as a new cacheItem.
-	// If it was a collision, append the result to the cached slice.
-	if !found {
-		val = []cacheItem{{e.Labels, relabeled}}
-	} else {
-		val = append(val.([]cacheItem), cacheItem{e.Labels, relabeled})
-	}
-
-	c.cache.Add(hash, val)
-	c.metrics.cacheSize.Set(float64(c.cache.Len()))
-
-	return relabeled
-}
-
-func (c *Component) process(e loki.Entry) model.LabelSet {
-	var lbls labels.Labels
-	for k, v := range e.Labels {
-		lbls = append(lbls, labels.Label{
-			Name:  string(k),
-			Value: string(v),
-		})
-	}
-	lbls, _ = relabel.Process(lbls, c.rcs...)
-
-	relabeled := make(model.LabelSet, len(lbls))
-	for i := range lbls {
-		relabeled[model.LabelName(lbls[i].Name)] = model.LabelValue(lbls[i].Value)
-	}
-	return relabeled
-}
-
-func (c *Component) LiveDebugging() {}

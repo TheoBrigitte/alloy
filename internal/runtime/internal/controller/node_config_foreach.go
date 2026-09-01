@@ -6,23 +6,23 @@ import (
 	"encoding/hex"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"path"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
 
-	"github.com/go-kit/log"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/grafana/alloy/internal/component"
+	"github.com/grafana/alloy/internal/nodeconf/foreach"
 	"github.com/grafana/alloy/internal/runner"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
+	"github.com/grafana/alloy/syntax"
 	"github.com/grafana/alloy/syntax/ast"
 	"github.com/grafana/alloy/syntax/vm"
 )
-
-const templateType = "template"
 
 // The ForeachConfigNode will create the pipeline defined in its template block for each entry defined in its collection argument.
 // Each pipeline is managed by a custom component.
@@ -36,7 +36,7 @@ type ForeachConfigNode struct {
 	componentName    string
 	moduleController ModuleController
 
-	logger log.Logger
+	logger *slog.Logger
 
 	// customReg is the customComponentRegistry of the current loader.
 	// We pass it so that the foreach children have access to modules.
@@ -50,7 +50,7 @@ type ForeachConfigNode struct {
 
 	mut   sync.RWMutex
 	block *ast.BlockStmt
-	args  ForEachArguments
+	args  foreach.Arguments
 
 	moduleControllerFactory func(opts ModuleControllerOpts) ModuleController
 	moduleControllerOpts    ModuleControllerOpts
@@ -61,6 +61,8 @@ type ForeachConfigNode struct {
 
 	dataFlowEdgeMut  sync.RWMutex
 	dataFlowEdgeRefs []string
+
+	runner *runner.Runner[*forEachChild]
 }
 
 var _ ComponentNode = (*ForeachConfigNode)(nil)
@@ -78,7 +80,7 @@ func NewForeachConfigNode(block *ast.BlockStmt, globals ComponentGlobals, custom
 		block:                     block,
 		componentName:             block.GetBlockName(),
 		id:                        BlockComponentID(block),
-		logger:                    log.With(globals.Logger, "component_path", globals.ControllerID, "component_id", nodeID),
+		logger:                    globals.Logger.Slog().With("component_path", globals.ControllerID, "component_id", nodeID),
 		moduleControllerFactory:   globals.NewModuleController,
 		moduleControllerOpts:      ModuleControllerOpts{Id: globalID},
 		customReg:                 customReg,
@@ -123,16 +125,6 @@ func (fn *ForeachConfigNode) ID() ComponentID {
 	return fn.id
 }
 
-type ForEachArguments struct {
-	Collection []any  `alloy:"collection,attr"`
-	Var        string `alloy:"var,attr"`
-
-	// enable_metrics should be false by default.
-	// That way users are protected from an explosion of debug metrics
-	// if there are many items inside "collection".
-	EnableMetrics bool `alloy:"enable_metrics,attr,optional"`
-}
-
 func (fn *ForeachConfigNode) Evaluate(evalScope *vm.Scope) error {
 	err := fn.evaluate(evalScope)
 
@@ -154,7 +146,7 @@ func (fn *ForeachConfigNode) evaluate(scope *vm.Scope) error {
 	var argsBody ast.Body
 	var template *ast.BlockStmt
 	for _, stmt := range fn.block.Body {
-		if blockStmt, ok := stmt.(*ast.BlockStmt); ok && blockStmt.GetBlockName() == templateType {
+		if blockStmt, ok := stmt.(*ast.BlockStmt); ok && blockStmt.GetBlockName() == foreach.TypeTemplate {
 			template = blockStmt
 			continue
 		}
@@ -167,12 +159,10 @@ func (fn *ForeachConfigNode) evaluate(scope *vm.Scope) error {
 
 	eval := vm.New(argsBody)
 
-	var args ForEachArguments
+	var args foreach.Arguments
 	if err := eval.Evaluate(scope, &args); err != nil {
 		return fmt.Errorf("decoding configuration: %w", err)
 	}
-
-	fn.args = args
 
 	// By default don't show debug metrics.
 	if args.EnableMetrics {
@@ -182,24 +172,55 @@ func (fn *ForeachConfigNode) evaluate(scope *vm.Scope) error {
 	} else {
 		fn.moduleControllerOpts.RegOverride = NoopRegistry{}
 	}
-	fn.moduleController = fn.moduleControllerFactory(fn.moduleControllerOpts)
+
+	if fn.moduleController == nil {
+		fn.moduleController = fn.moduleControllerFactory(fn.moduleControllerOpts)
+	} else if fn.args.EnableMetrics != args.EnableMetrics && fn.runner != nil {
+		// When metrics are toggled on/off, we must recreate the module controller with the new registry.
+		// This requires recreating and re-registering all components with the new controller.
+		// Since enabling/disabling metrics is typically a one-time configuration change rather than
+		// a frequent runtime toggle, the overhead of recreating components is acceptable.
+		fn.moduleController = fn.moduleControllerFactory(fn.moduleControllerOpts)
+		fn.customComponents = make(map[string]CustomComponent)
+		err := fn.runner.ApplyTasks(context.Background(), []*forEachChild{}) // stops all running children
+		if err != nil {
+			return fmt.Errorf("error stopping foreach children: %w", err)
+		}
+	}
+
+	fn.args = args
 
 	// Loop through the items to create the custom components.
 	// On re-evaluation new components are added and existing ones are updated.
 	newCustomComponentIds := make(map[string]bool, len(args.Collection))
 	fn.customComponentHashCounts = make(map[string]int)
 	for i := 0; i < len(args.Collection); i++ {
+		// Using default value for id as whole collection object
+		id := args.Collection[i]
+
+		// Extract Id from collection if exists
+		if args.Id != "" {
+			if val, ok := collectionItemID(args.Collection[i], args.Id, fn.logger); ok {
+				// Use the field's value for fingerprinting
+				id = val
+			}
+		}
+
 		// We must create an ID from the collection entries to avoid recreating all components on every updates.
 		// We track the hash counts because the collection might contain duplicates ([1, 1, 1] would result in the same ids
 		// so we handle it by adding the count at the end -> [11, 12, 13]
-		customComponentID := fmt.Sprintf("foreach_%s", objectFingerprint(args.Collection[i]))
+		customComponentID := fmt.Sprintf("foreach_%s", objectFingerprint(id, args.HashStringId))
 		count := fn.customComponentHashCounts[customComponentID] // count = 0 if the key is not found
 		fn.customComponentHashCounts[customComponentID] = count + 1
 		customComponentID += fmt.Sprintf("_%d", count+1)
 
-		cc, err := fn.getOrCreateCustomComponent(customComponentID)
+		cc, created, err := fn.getOrCreateCustomComponent(customComponentID)
 		if err != nil {
 			return err
+		}
+
+		if created && args.HashStringId && id != nil && reflect.TypeOf(id).Kind() == reflect.String {
+			fn.logger.Debug("a new foreach pipeline was created", "value", id, "fingerprint", customComponentID)
 		}
 
 		// Expose the current scope + the collection item that correspond to the child.
@@ -233,18 +254,18 @@ func (fn *ForeachConfigNode) evaluate(scope *vm.Scope) error {
 
 // Assumes that a lock is held,
 // so that fn.moduleController doesn't change while the function is running.
-func (fn *ForeachConfigNode) getOrCreateCustomComponent(customComponentID string) (CustomComponent, error) {
+func (fn *ForeachConfigNode) getOrCreateCustomComponent(customComponentID string) (CustomComponent, bool, error) {
 	cc, exists := fn.customComponents[customComponentID]
 	if exists {
-		return cc, nil
+		return cc, false, nil
 	}
 
 	newCC, err := fn.moduleController.NewCustomComponent(customComponentID, func(exports map[string]any) {})
 	if err != nil {
-		return nil, fmt.Errorf("creating custom component: %w", err)
+		return nil, true, fmt.Errorf("creating custom component: %w", err)
 	}
 	fn.customComponents[customComponentID] = newCC
-	return newCC, nil
+	return newCC, true, nil
 }
 
 func (fn *ForeachConfigNode) UpdateBlock(b *ast.BlockStmt) {
@@ -257,12 +278,12 @@ func (fn *ForeachConfigNode) Run(ctx context.Context) error {
 	newCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	runner := runner.New(func(forEachChild *forEachChild) runner.Worker {
+	fn.runner = runner.New(func(forEachChild *forEachChild) runner.Worker {
 		return &forEachChildRunner{
 			child: forEachChild,
 		}
 	})
-	defer runner.Stop()
+	defer fn.runner.Stop()
 
 	updateTasks := func() error {
 		fn.mut.Lock()
@@ -273,11 +294,11 @@ func (fn *ForeachConfigNode) Run(ctx context.Context) error {
 			tasks = append(tasks, &forEachChild{
 				id:           customComponentID,
 				cc:           customComponent,
-				logger:       log.With(fn.logger, "foreach_path", fn.nodeID, "child_id", customComponentID),
+				logger:       fn.logger.With("foreach_path", fn.nodeID, "child_id", customComponentID),
 				healthUpdate: fn.setRunHealth,
 			})
 		}
-		return runner.ApplyTasks(newCtx, tasks)
+		return fn.runner.ApplyTasks(newCtx, tasks)
 	}
 
 	fn.setRunHealth(component.HealthTypeHealthy, "started foreach")
@@ -299,7 +320,7 @@ func (fn *ForeachConfigNode) run(ctx context.Context, updateTasks func() error) 
 		case <-fn.forEachChildrenUpdateChan:
 			err := updateTasks()
 			if err != nil {
-				level.Error(fn.logger).Log("msg", "error encountered while updating foreach children", "err", err)
+				fn.logger.Error("error encountered while updating foreach children", "err", err)
 				fn.setRunHealth(component.HealthTypeUnhealthy, fmt.Sprintf("error encountered while updating foreach children: %s", err))
 				// the error is not fatal, the node can still run in unhealthy mode
 			} else {
@@ -370,14 +391,14 @@ type forEachChildRunner struct {
 type forEachChild struct {
 	cc           CustomComponent
 	id           string
-	logger       log.Logger
+	logger       *slog.Logger
 	healthUpdate func(t component.HealthType, msg string)
 }
 
 func (fr *forEachChildRunner) Run(ctx context.Context) {
 	err := fr.child.cc.Run(ctx)
 	if err != nil {
-		level.Error(fr.child.logger).Log("msg", "foreach child stopped running", "err", err)
+		fr.child.logger.Error("foreach child stopped running", "err", err)
 		fr.child.healthUpdate(component.HealthTypeUnhealthy, fmt.Sprintf("foreach child stopped running: %s", err))
 	}
 }
@@ -400,10 +421,13 @@ func computeHash(s string) string {
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-func objectFingerprint(obj any) string {
+func objectFingerprint(id any, hashId bool) string {
 	// TODO: Test what happens if there is a "true" string and a true bool in the collection.
-	switch v := obj.(type) {
+	switch v := id.(type) {
 	case string:
+		if hashId {
+			return computeHash(v)
+		}
 		return replaceNonAlphaNumeric(v)
 	case int, bool:
 		return fmt.Sprintf("%v", v)
@@ -414,6 +438,63 @@ func objectFingerprint(obj any) string {
 	default:
 		return computeHash(fmt.Sprintf("%#v", v))
 	}
+}
+
+func collectionItemID(item any, key string, logger *slog.Logger) (any, bool) {
+	switch value := item.(type) {
+	case map[string]any:
+		// Inline object literals with simple values.
+		// Example: collection = [{name = "one", port = "8080"}, {name = "two", port = "8081"}]
+		val, ok := value[key]
+		if !ok {
+			logMissingCollectionID(logger, key)
+			return nil, false
+		}
+		return val, true
+	case map[string]string:
+		// Plain Go maps - used to be common, but are now replaced by Target capsules for performance.
+		// We keep it for maximum compatibility in case it's needed in the future.
+		val, ok := value[key]
+		if !ok {
+			logMissingCollectionID(logger, key)
+			return nil, false
+		}
+		return val, true
+	case map[string]syntax.Value:
+		// Inline object literals with expressions or computed values.
+		// Example: collection = [{name = "one", url = "http://" + hostname}]
+		val, ok := value[key]
+		if !ok {
+			logMissingCollectionID(logger, key)
+			return nil, false
+		}
+		return val.Interface(), true
+	case syntax.ConvertibleIntoCapsule:
+		// Capsules from component exports, such as discovery.Target.
+		// Example: collection = discovery.kubernetes.pods.targets
+		return collectionItemIDFromCapsule(value, key, logger)
+	default:
+		logger.Debug("unsupported collection item type encountered in foreach", "item", fmt.Sprintf("%#v", item))
+		return nil, false
+	}
+}
+
+func collectionItemIDFromCapsule(value syntax.ConvertibleIntoCapsule, key string, logger *slog.Logger) (any, bool) {
+	var obj map[string]syntax.Value
+	if err := value.ConvertInto(&obj); err == nil {
+		val, ok := obj[key]
+		if ok {
+			return val.Interface(), true
+		}
+		logMissingCollectionID(logger, key)
+		return nil, false
+	}
+
+	return nil, false
+}
+
+func logMissingCollectionID(logger *slog.Logger, key string) {
+	logger.Warn("specified id not found in collection item", "id", key)
 }
 
 func replaceNonAlphaNumeric(s string) string {

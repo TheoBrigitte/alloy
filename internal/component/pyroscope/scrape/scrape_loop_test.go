@@ -2,6 +2,7 @@ package scrape
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,18 +11,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-kit/log"
-	config_util "github.com/prometheus/common/config"
-	"github.com/prometheus/common/model"
-	"github.com/prometheus/prometheus/discovery/targetgroup"
-	"github.com/prometheus/prometheus/model/labels"
-	"github.com/stretchr/testify/require"
 	"go.uber.org/atomic"
 	"go.uber.org/goleak"
 
 	"github.com/grafana/alloy/internal/component/discovery"
 	"github.com/grafana/alloy/internal/component/pyroscope"
-	"github.com/grafana/alloy/internal/util"
+	"github.com/grafana/alloy/internal/component/pyroscope/util/testlog"
+	config_util "github.com/prometheus/common/config"
+	"github.com/prometheus/common/model"
+	"github.com/prometheus/prometheus/discovery/targetgroup"
+	"github.com/prometheus/prometheus/model/labels"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestScrapePool(t *testing.T) {
@@ -39,7 +40,7 @@ func TestScrapePool(t *testing.T) {
 		func(ctx context.Context, labels labels.Labels, samples []*pyroscope.RawSample) error {
 			return nil
 		}),
-		util.TestLogger(t))
+		testlog.TestLogger(t))
 	require.NoError(t, err)
 
 	defer p.stop()
@@ -138,7 +139,7 @@ func TestScrapeLoop(t *testing.T) {
 		if down.Load() {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
-		w.Write([]byte("ok"))
+		w.Write([]byte{0x0A, 0x02, 0x6F, 0x6B}) // Return valid protobuf data
 	}))
 	defer server.Close()
 	appendTotal := atomic.NewInt64(0)
@@ -148,16 +149,20 @@ func TestScrapeLoop(t *testing.T) {
 			model.SchemeLabel, "http",
 			model.AddressLabel, strings.TrimPrefix(server.URL, "http://"),
 			ProfilePath, "/debug/pprof/profile",
+			pyroscope.LabelOtelScopeName, "user-scope",
+			pyroscope.LabelOtelScopeVersion, "user-version",
 		), url.Values{
 			"seconds": []string{"1"},
 		}),
 		server.Client(),
 		pyroscope.AppendableFunc(func(_ context.Context, labels labels.Labels, samples []*pyroscope.RawSample) error {
 			appendTotal.Inc()
-			require.Equal(t, []byte("ok"), samples[0].RawProfile)
+			require.Equal(t, "user-scope", labels.Get(pyroscope.LabelOtelScopeName))
+			require.Equal(t, "user-version", labels.Get(pyroscope.LabelOtelScopeVersion))
+			require.Equal(t, []byte{0x0A, 0x02, 0x6F, 0x6B}, samples[0].RawProfile)
 			return nil
 		}),
-		200*time.Millisecond, 30*time.Second, util.TestLogger(t))
+		200*time.Millisecond, 30*time.Second, testlog.TestLogger(t))
 	defer loop.stop(true)
 
 	require.Equal(t, HealthUnknown, loop.Health())
@@ -175,6 +180,27 @@ func TestScrapeLoop(t *testing.T) {
 	require.NotEmpty(t, loop.LastScrapeDuration())
 }
 
+func TestGodeltaprofLoopAppender(t *testing.T) {
+	target := NewTarget(labels.FromStrings(
+		model.MetricNameLabel, pprofGoDeltaProfMemory,
+		model.SchemeLabel, "http",
+		model.AddressLabel, "127.0.0.1:239",
+		ProfilePath, "/debug/pprof/delta_heap"),
+		url.Values{
+			"seconds": []string{"1"},
+		})
+	a := pyroscope.AppendableFunc(func(_ context.Context, labels labels.Labels, samples []*pyroscope.RawSample) error {
+		return nil
+	})
+	loop := newScrapeLoop(
+		target,
+		&http.Client{},
+		a,
+		200*time.Millisecond, 30*time.Second, testlog.TestLogger(t))
+	_, da := loop.appender.(*deltaAppender)
+	assert.False(t, da)
+}
+
 func BenchmarkSync(b *testing.B) {
 	args := NewDefaultArguments()
 	args.Targets = []discovery.Target{}
@@ -183,7 +209,7 @@ func BenchmarkSync(b *testing.B) {
 		func(ctx context.Context, labels labels.Labels, samples []*pyroscope.RawSample) error {
 			return nil
 		}),
-		log.NewNopLogger())
+		slog.New(slog.DiscardHandler))
 	require.NoError(b, err)
 	groups1 := []*targetgroup.Group{
 		{

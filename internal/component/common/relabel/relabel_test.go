@@ -19,10 +19,12 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/grafana/alloy/syntax"
 	"github.com/grafana/regexp"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v2"
 
+	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/util/testutil"
 )
@@ -573,30 +575,32 @@ func TestRelabel(t *testing.T) {
 		},
 	}
 
-	for _, test := range tests {
-		// Setting default fields, mimicking the behaviour in Prometheus.
-		for _, cfg := range test.relabel {
-			if cfg.Action == "" {
-				cfg.Action = DefaultRelabelConfig.Action
+	for i, test := range tests {
+		t.Run(fmt.Sprintf("test-%d", i), func(t *testing.T) {
+			// Setting default fields, mimicking the behaviour in Prometheus.
+			for _, cfg := range test.relabel {
+				if cfg.Action == "" {
+					cfg.Action = DefaultRelabelConfig.Action
+				}
+				if cfg.Separator == "" {
+					cfg.Separator = DefaultRelabelConfig.Separator
+				}
+				if cfg.Regex.Regexp == nil || cfg.Regex.String() == "" {
+					cfg.Regex = DefaultRelabelConfig.Regex
+				}
+				if cfg.Replacement == "" {
+					cfg.Replacement = DefaultRelabelConfig.Replacement
+				}
+				require.NoError(t, cfg.Validate())
 			}
-			if cfg.Separator == "" {
-				cfg.Separator = DefaultRelabelConfig.Separator
-			}
-			if cfg.Regex.Regexp == nil || cfg.Regex.String() == "" {
-				cfg.Regex = DefaultRelabelConfig.Regex
-			}
-			if cfg.Replacement == "" {
-				cfg.Replacement = DefaultRelabelConfig.Replacement
-			}
-			require.NoError(t, cfg.Validate())
-		}
 
-		builder := newBuilder(test.input)
-		keep := ProcessBuilder(builder, test.relabel...)
-		require.Equal(t, !test.drop, keep)
-		if keep {
-			testutil.RequireEqual(t, test.output, builder.Labels())
-		}
+			builder := newBuilder(test.input)
+			keep := ProcessBuilder(builder, test.relabel...)
+			require.Equal(t, !test.drop, keep)
+			if keep {
+				testutil.RequireEqual(t, test.output, builder.Labels())
+			}
+		})
 	}
 }
 
@@ -659,7 +663,7 @@ func TestRelabelValidate(t *testing.T) {
 		},
 	}
 	for i, test := range tests {
-		t.Run(fmt.Sprint(i), func(t *testing.T) {
+		t.Run(fmt.Sprintf("test-case-%d", i), func(t *testing.T) {
 			err := test.config.Validate()
 			if test.expected == "" {
 				require.NoError(t, err)
@@ -855,6 +859,21 @@ func BenchmarkRelabel(b *testing.B) {
 	}
 }
 
+func TestComponentToPromRelabelConfigs(t *testing.T) {
+	rule := `
+		action = "labeldrop"
+        regex  = "helm_sh_chart"
+	`
+
+	var cfg Config
+	require.NoError(t, syntax.Unmarshal([]byte(rule), &cfg))
+
+	converted := ComponentToPromRelabelConfigs([]*Config{&cfg})
+	for _, r := range converted {
+		require.NoError(t, r.Validate(model.LegacyValidation))
+	}
+}
+
 // MustNewRegexp works like NewRegexp, but panics if the regular expression does not compile.
 func MustNewRegexp(s string) Regexp {
 	re, err := NewRegexp(s)
@@ -867,7 +886,7 @@ func MustNewRegexp(s string) Regexp {
 // NewRegexp creates a new anchored Regexp and returns an error if the
 // passed-in regular expression does not compile.
 func NewRegexp(s string) (Regexp, error) {
-	regex, err := regexp.Compile("^(?:" + s + ")$")
+	regex, err := regexp.Compile("^(?s:" + s + ")$")
 	return Regexp{Regexp: regex}, err
 }
 

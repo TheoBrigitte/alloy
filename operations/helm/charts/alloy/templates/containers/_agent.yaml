@@ -2,7 +2,11 @@
 {{- $values := (mustMergeOverwrite .Values.alloy (or .Values.agent dict)) -}}
 - name: alloy
   image: {{ .Values.global.image.registry | default .Values.image.registry }}/{{ .Values.image.repository }}{{ include "alloy.imageId" . }}
-  imagePullPolicy: {{ .Values.image.pullPolicy }}
+  imagePullPolicy: {{ .Values.global.image.pullPolicy | default .Values.image.pullPolicy }}
+  {{- with $values.command }}
+  command:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   args:
     - run
     - /etc/alloy/{{ include "alloy.config-map.key" . }}
@@ -32,16 +36,23 @@
       valueFrom:
         fieldRef:
           fieldPath: spec.nodeName
-    {{- range $values.extraEnv }}
-    - {{- toYaml . | nindent 6 }}
+    - name: K8S_NODE_NAME {{- /* Default used by some Alloy components */}}
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+    {{- with $values.extraEnv }}
+      {{- toYaml . | nindent 4 }}
     {{- end }}
   {{- if $values.envFrom }}
   envFrom:
     {{- toYaml $values.envFrom | nindent 4 }}
   {{- end }}
+  {{- if or $values.enableHttpServerPort (gt (len $values.extraPorts) 0) }}
   ports:
+    {{- if $values.enableHttpServerPort }}
     - containerPort: {{ $values.listenPort }}
       name: http-metrics
+    {{- end }}
     {{- range $portMap := $values.extraPorts }}
     - containerPort: {{ $portMap.targetPort }}
       {{- if $portMap.hostPort }}
@@ -50,13 +61,16 @@
       name: {{ $portMap.name }}
       protocol: {{ coalesce $portMap.protocol "TCP" }}
     {{- end }}
+  {{- end }}
+  {{- if $values.enableHttpServerPort }}
   readinessProbe:
     httpGet:
       path: /-/ready
       port: {{ $values.listenPort }}
       scheme: {{ $values.listenScheme }}
-    initialDelaySeconds: 10
-    timeoutSeconds: 1
+    initialDelaySeconds: {{ $values.initialDelaySeconds }}
+    timeoutSeconds: {{ $values.timeoutSeconds }}
+  {{- end }}
   {{- with $values.livenessProbe }}
   livenessProbe:
     {{- toYaml . | nindent 4 }}
@@ -86,7 +100,7 @@
       mountPath: /var/lib/docker/containers
       readOnly: true
     {{- end }}
-    {{- range $values.mounts.extra }}
-    - {{- toYaml . | nindent 6 }}
+    {{- with $values.mounts.extra }}
+    {{- toYaml . | nindent 4 }}
     {{- end }}
 {{- end }}

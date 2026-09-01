@@ -21,16 +21,15 @@ package integrations
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 
-	"github.com/go-kit/log"
 	"github.com/prometheus/prometheus/discovery"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
 
 	"github.com/grafana/alloy/internal/static/integrations/v2/autoscrape"
 	"github.com/grafana/alloy/internal/static/server"
-	_ "github.com/grafana/alloy/internal/util/otelfeaturegatefix" // Gracefully handle duplicate OTEL feature gates
 )
 
 var (
@@ -62,7 +61,7 @@ type Config interface {
 	// NewIntegration must be idempotent for a Config. Use
 	// Integration.RunIntegration to do anything with side effects, such as
 	// opening a port.
-	NewIntegration(log.Logger, Globals) (Integration, error)
+	NewIntegration(*slog.Logger, Globals) (Integration, error)
 }
 
 // ComparableConfig extends Config with an ConfigEquals method.

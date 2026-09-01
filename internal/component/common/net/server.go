@@ -2,13 +2,15 @@ package net
 
 import (
 	"fmt"
+	"log/slog"
 
-	"github.com/go-kit/log"
 	"github.com/gorilla/mux"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 	dskit "github.com/grafana/dskit/server"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
+	"golang.org/x/net/http2/h2c" //nolint:staticcheck // TODO(#6347): migrate to http.Server.Protocols/HTTP2 once HTTP2Config field mapping (MaxHandlers, IdleTimeout, ReadIdleTimeout) is resolved.
+
+	"github.com/grafana/alloy/internal/slogadapter"
 )
 
 // TargetServer is wrapper around dskit.Server that handles some common
@@ -16,15 +18,18 @@ import (
 // handles configuration and initialization, the handlers implementation are
 // left to the consumer.
 type TargetServer struct {
-	logger           log.Logger
+	logger           *slog.Logger
 	config           *dskit.Config
 	metricsNamespace string
 	server           *dskit.Server
+	http2            *HTTP2Config
 }
 
 // NewTargetServer creates a new TargetServer, applying some defaults to the server configuration.
 // If provided config is nil, a default configuration will be used instead.
-func NewTargetServer(logger log.Logger, metricsNamespace string, reg prometheus.Registerer, config *ServerConfig) (*TargetServer, error) {
+func NewTargetServer(logger *slog.Logger, metricsNamespace string, reg prometheus.Registerer, config *ServerConfig) (*TargetServer, error) {
+	// TODO: add support for different validation schemes.
+	//nolint:staticcheck
 	if !model.IsValidMetricName(model.LabelValue(metricsNamespace)) {
 		return nil, fmt.Errorf("metrics namespace is not prometheus compatible: %s", metricsNamespace)
 	}
@@ -36,6 +41,9 @@ func NewTargetServer(logger log.Logger, metricsNamespace string, reg prometheus.
 
 	if config == nil {
 		config = DefaultServerConfig()
+	}
+	if config.HTTP != nil {
+		ts.http2 = config.HTTP.HTTP2
 	}
 
 	// convert from Alloy into the dskit config
@@ -55,26 +63,30 @@ func NewTargetServer(logger log.Logger, metricsNamespace string, reg prometheus.
 	// functionality.
 	ts.config.RegisterInstrumentation = false
 	// Add logger to dskit
-	ts.config.Log = ts.logger
+	ts.config.Log = slogadapter.GoKit(ts.logger.Handler())
 
 	return ts, nil
 }
 
 // MountAndRun mounts the handlers and starting the server.
 func (ts *TargetServer) MountAndRun(mountRoute func(router *mux.Router)) error {
-	level.Info(ts.logger).Log("msg", "starting server")
+	ts.logger.Info("starting server")
 	srv, err := dskit.New(*ts.config)
 	if err != nil {
 		return err
 	}
 
 	ts.server = srv
+
+	if http2Server := ts.http2.Server(); http2Server != nil {
+		ts.server.HTTPServer.Handler = h2c.NewHandler(ts.server.HTTPServer.Handler, http2Server) //nolint:staticcheck // TODO(#6347): migrate to http.Server.Protocols.SetUnencryptedHTTP2 once we map all HTTP2Config fields.
+	}
 	mountRoute(ts.server.HTTP)
 
 	go func() {
 		err := srv.Run()
 		if err != nil {
-			level.Error(ts.logger).Log("msg", "server shutdown with error", "err", err)
+			ts.logger.Error("server shutdown with error", "err", err)
 		}
 	}()
 
@@ -95,4 +107,8 @@ func (ts *TargetServer) GRPCListenAddr() string {
 func (ts *TargetServer) StopAndShutdown() {
 	ts.server.Stop()
 	ts.server.Shutdown()
+}
+
+func (ts *TargetServer) Config() dskit.Config {
+	return *ts.config
 }

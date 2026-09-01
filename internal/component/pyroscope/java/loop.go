@@ -6,13 +6,13 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/go-kit/log"
 	jfrpprof "github.com/grafana/jfr-parser/pprof"
 	jfrpprofPyroscope "github.com/grafana/jfr-parser/pprof/pyroscope"
 	"github.com/prometheus/prometheus/model/labels"
@@ -21,13 +21,12 @@ import (
 	"github.com/grafana/alloy/internal/component/discovery"
 	"github.com/grafana/alloy/internal/component/pyroscope"
 	"github.com/grafana/alloy/internal/component/pyroscope/java/asprof"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 )
 
 const spyName = "alloy.java"
 
 type profilingLoop struct {
-	logger     log.Logger
+	logger     *slog.Logger
 	output     *pyroscope.Fanout
 	cfg        ProfilingConfig
 	wg         sync.WaitGroup
@@ -35,10 +34,9 @@ type profilingLoop struct {
 	pid        int
 	target     discovery.Target
 	cancel     context.CancelFunc
-	dist       *asprof.Distribution
 	jfrFile    string
 	startTime  time.Time
-	profiler   *asprof.Profiler
+	profiler   Profiler
 	sampleRate int
 
 	error            error
@@ -49,21 +47,24 @@ type profilingLoop struct {
 	totalSamples     int64
 }
 
-func newProfilingLoop(pid int, target discovery.Target, logger log.Logger, profiler *asprof.Profiler, output *pyroscope.Fanout, cfg ProfilingConfig) *profilingLoop {
+type Profiler interface {
+	CopyLib(pid int) error
+	Execute(argv []string) (string, string, error)
+}
+
+func newProfilingLoop(pid int, target discovery.Target, logger *slog.Logger, profiler Profiler, output *pyroscope.Fanout, cfg ProfilingConfig) *profilingLoop {
 	ctx, cancel := context.WithCancel(context.Background())
-	dist := profiler.Distribution()
 	p := &profilingLoop{
-		logger:   log.With(logger, "pid", pid),
+		logger:   logger.With("pid", pid),
 		output:   output,
 		pid:      pid,
 		target:   target,
 		cancel:   cancel,
-		dist:     dist,
 		jfrFile:  fmt.Sprintf("/tmp/asprof-%d-%d.jfr", os.Getpid(), pid),
 		cfg:      cfg,
 		profiler: profiler,
 	}
-	_ = level.Debug(p.logger).Log("msg", "new process", "target", fmt.Sprintf("%+v", target))
+	p.logger.Debug("new process", "target", fmt.Sprintf("%+v", target))
 
 	p.wg.Add(1)
 	go func() {
@@ -74,7 +75,7 @@ func newProfilingLoop(pid int, target discovery.Target, logger log.Logger, profi
 }
 
 func (p *profilingLoop) loop(ctx context.Context) {
-	if err := p.profiler.CopyLib(p.dist, p.pid); err != nil {
+	if err := p.profiler.CopyLib(p.pid); err != nil {
 		p.onError(fmt.Errorf("failed to copy libasyncProfiler.so: %w", err))
 		return
 	}
@@ -114,15 +115,37 @@ func (p *profilingLoop) loop(ctx context.Context) {
 	}
 }
 
+func (p *profilingLoop) cleanupJFR() {
+	// first try to find through process path
+	jfrFile := asprof.ProcessPath(p.jfrFile, p.pid)
+	if err := os.Remove(jfrFile); os.IsNotExist(err) {
+		// the process path was not found, this is possible when the target process stopped in the meantime.
+
+		if jfrFile == p.jfrFile {
+			// nothing we can do, the process path was not actually a /proc path
+			return
+		}
+
+		jfrFile = p.jfrFile
+		if err := os.Remove(jfrFile); os.IsNotExist(err) {
+			p.logger.Debug("unable to delete jfr file, likely because target process is stopped and was containerized", "path", jfrFile, "err", err)
+			// file not found on the host system, process was likely containerized and we can't delete this file anymore
+			return
+		} else if err != nil {
+			p.logger.Warn("failed to delete jfr file at host path", "path", jfrFile, "err", err)
+		}
+	} else if err != nil {
+		p.logger.Warn("failed to delete jfr file at process path", "path", jfrFile, "err", err)
+	}
+}
+
 func (p *profilingLoop) reset() error {
 	jfrFile := asprof.ProcessPath(p.jfrFile, p.pid)
 	startTime := p.startTime
 	endTime := time.Now()
 	sampleRate := p.sampleRate
 	p.startTime = endTime
-	defer func() {
-		os.Remove(jfrFile)
-	}()
+	defer p.cleanupJFR()
 
 	err := p.stop()
 	if err != nil {
@@ -132,7 +155,7 @@ func (p *profilingLoop) reset() error {
 	if err != nil {
 		return fmt.Errorf("failed to read jfr file: %w", err)
 	}
-	_ = level.Debug(p.logger).Log("msg", "jfr file read", "len", len(jfrBytes))
+	p.logger.Debug("jfr file read", "len", len(jfrBytes))
 
 	return p.push(jfrBytes, startTime, endTime, int64(sampleRate))
 }
@@ -154,14 +177,8 @@ func (p *profilingLoop) push(jfrBytes []byte, startTime time.Time, endTime time.
 	for _, req := range profiles.Profiles {
 		metric := req.Metric
 		sz := req.Profile.SizeVT()
-		l := log.With(p.logger, "metric", metric, "sz", sz)
-		ls := labels.NewBuilder(nil)
-		for _, l := range jfrpprofPyroscope.Labels(target.AsMap(), profiles.JFREvent, req.Metric, "", spyName) {
-			ls.Set(l.Name, l.Value)
-		}
-		if ls.Get(labelServiceName) == "" {
-			ls.Set(labelServiceName, inferServiceName(target))
-		}
+		l := p.logger.With("metric", metric, "sz", sz)
+		ls := labelsForProfile(target, profiles.JFREvent, req.Metric)
 
 		p.lastBytesPerType = append(p.lastBytesPerType, debugInfoBytesPerType{
 			Type:  metric,
@@ -172,16 +189,16 @@ func (p *profilingLoop) push(jfrBytes []byte, startTime time.Time, endTime time.
 
 		profile, err := req.Profile.MarshalVT()
 		if err != nil {
-			_ = l.Log("msg", "failed to marshal profile", "err", err)
+			l.Error("failed to marshal profile", "err", err)
 			continue
 		}
 		samples := []*pyroscope.RawSample{{RawProfile: profile}}
-		err = p.output.Appender().Append(context.Background(), ls.Labels(), samples)
+		err = p.output.Appender().Append(context.Background(), ls, samples)
 		if err != nil {
-			_ = l.Log("msg", "failed to push jfr", "err", err)
+			l.Error("failed to push jfr", "err", err)
 			continue
 		}
-		_ = l.Log("msg", "pushed jfr-pprof")
+		l.Info("pushed jfr-pprof")
 
 		p.mutex.Lock()
 		p.lastPush = time.Now()
@@ -190,6 +207,18 @@ func (p *profilingLoop) push(jfrBytes []byte, startTime time.Time, endTime time.
 		p.mutex.Unlock()
 	}
 	return nil
+}
+
+func labelsForProfile(target discovery.Target, jfrEvent, metric string) labels.Labels {
+	ls := labels.NewBuilder(labels.EmptyLabels())
+	for _, l := range jfrpprofPyroscope.Labels(target.AsMap(), jfrEvent, metric, "", spyName) {
+		ls.Set(l.Name, l.Value)
+	}
+	if ls.Get(labelServiceName) == "" {
+		ls.Set(labelServiceName, inferServiceName(target))
+	}
+	pyroscope.AddScopeLabels(ls, pyroscope.ScopeNameJava)
+	return ls.Labels()
 }
 
 func (p *profilingLoop) start() error {
@@ -202,28 +231,39 @@ func (p *profilingLoop) start() error {
 		"-f", p.jfrFile,
 		"-o", "jfr",
 	)
-	if cfg.CPU {
-		argv = append(argv, "-e", cfg.Event)
-		if cfg.PerThread {
-			argv = append(argv, "-t")
+	if len(cfg.CustomArguments) == 0 {
+		if cfg.CPU {
+			argv = append(argv, "-e", cfg.Event)
+			if cfg.PerThread {
+				argv = append(argv, "-t")
+			}
+			profilingInterval := time.Second.Nanoseconds() / int64(cfg.SampleRate)
+			argv = append(argv, "-i", strconv.FormatInt(profilingInterval, 10))
 		}
-		profilingInterval := time.Second.Nanoseconds() / int64(cfg.SampleRate)
-		argv = append(argv, "-i", strconv.FormatInt(profilingInterval, 10))
+		if cfg.Alloc != "" {
+			argv = append(argv, "--alloc", cfg.Alloc)
+			if cfg.Tlab {
+				argv = append(argv, "--tlab")
+			}
+		}
+		if cfg.Lock != "" {
+			argv = append(argv, "--lock", cfg.Lock)
+		}
+		if cfg.LogLevel != "" {
+			argv = append(argv, "-L", cfg.LogLevel)
+		}
+	} else {
+		argv = append(argv, cfg.CustomArguments...)
 	}
-	if cfg.Alloc != "" {
-		argv = append(argv, "--alloc", cfg.Alloc)
-	}
-	if cfg.Lock != "" {
-		argv = append(argv, "--lock", cfg.Lock)
-	}
+
 	argv = append(argv,
 		"start",
 		"--timeout", strconv.Itoa(int(p.interval().Seconds())),
 		strconv.Itoa(p.pid),
 	)
 
-	_ = level.Debug(p.logger).Log("cmd", fmt.Sprintf("%s %s", p.dist.LauncherPath(), strings.Join(argv, " ")))
-	stdout, stderr, err := p.profiler.Execute(p.dist, argv)
+	p.logger.Debug("starting profiler", "cmd", strings.Join(argv, " "))
+	stdout, stderr, err := p.profiler.Execute(argv)
 	if err != nil {
 		return fmt.Errorf("asprof failed to run: %w %s %s", err, stdout, stderr)
 	}
@@ -242,12 +282,12 @@ func (p *profilingLoop) stop() error {
 		"-o", "jfr",
 		strconv.Itoa(p.pid),
 	}
-	_ = level.Debug(p.logger).Log("msg", "asprof", "cmd", fmt.Sprintf("%s %s", p.dist.LauncherPath(), strings.Join(argv, " ")))
-	stdout, stderr, err := p.profiler.Execute(p.dist, argv)
+	p.logger.Debug("asprof", "cmd", strings.Join(argv, " "))
+	stdout, stderr, err := p.profiler.Execute(argv)
 	if err != nil {
 		return fmt.Errorf("asprof failed to run: %w %s %s", err, stdout, stderr)
 	}
-	_ = level.Debug(p.logger).Log("msg", "asprof stopped", "stdout", stdout, "stderr", stderr)
+	p.logger.Debug("asprof stopped", "stdout", stdout, "stderr", stderr)
 	return nil
 }
 
@@ -262,15 +302,16 @@ func (p *profilingLoop) update(target discovery.Target, config ProfilingConfig) 
 func (p *profilingLoop) Close() error {
 	p.cancel()
 	p.wg.Wait()
+	p.cleanupJFR()
 	return nil
 }
 
 func (p *profilingLoop) onError(err error) bool {
 	alive := p.alive()
 	if alive {
-		_ = level.Error(p.logger).Log("err", err)
+		p.logger.Error("profile loop error", "err", err)
 	} else {
-		_ = level.Debug(p.logger).Log("err", err)
+		p.logger.Debug("profile loop error", "err", err)
 	}
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
@@ -320,7 +361,7 @@ func (p *profilingLoop) getTarget() discovery.Target {
 func (p *profilingLoop) alive() bool {
 	exists, err := gopsutil.PidExists(int32(p.pid))
 	if err != nil {
-		_ = level.Error(p.logger).Log("msg", "failed to check if process is alive", "err", err)
+		p.logger.Error("failed to check if process is alive", "err", err)
 	}
 	return err == nil && exists
 }

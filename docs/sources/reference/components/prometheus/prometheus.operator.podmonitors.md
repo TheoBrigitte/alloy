@@ -5,6 +5,8 @@ aliases:
 description: Learn about prometheus.operator.podmonitors
 labels:
   stage: general-availability
+  products:
+    - oss
 title: prometheus.operator.podmonitors
 ---
 
@@ -21,7 +23,7 @@ The default configuration assumes {{< param "PRODUCT_NAME" >}} is running inside
 You can run it from outside the cluster by supplying connection info in the `client` block, but network level access to Pods is required to scrape metrics from them.
 
 PodMonitors may reference secrets for authenticating to targets to scrape them.
-In these cases, the secrets are loaded and refreshed only when the PodMonitor is updated or when this component refreshes its' internal state, which happens on a 5-minute refresh cycle.
+In these cases, the secrets are loaded and refreshed only when the PodMonitor is updated or when this component refreshes its internal state, which happens on a 5-minute refresh cycle.
 
 ## Usage
 
@@ -35,15 +37,17 @@ prometheus.operator.podmonitors "<LABEL>" {
 
 You can use the following arguments with `prometheus.operator.podmonitors`:
 
-| Name                    | Type                    | Description                                                                                               | Default | Required |
-| ----------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------- | ------- | -------- |
-| `forward_to`            | `list(MetricsReceiver)` | List of receivers to send scraped metrics to.                                                             |         | yes      |
-| `namespaces`            | `list(string)`          | List of namespaces to search for PodMonitor resources. If not specified, all namespaces will be searched. |         | no       |
-| `informer_sync_timeout` | `duration`              | Timeout for initial sync of PodMonitor resources.                                                         | `1m`    | no       |
+| Name                    | Type                    | Description                                                                                           | Default | Required |
+| ----------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------- | ------- | -------- |
+| `forward_to`            | `list(MetricsReceiver)` | List of receivers to send scraped metrics to.                                                         |         | yes      |
+| `namespaces`            | `list(string)`          | List of namespaces to search for PodMonitor resources. If not specified, all namespaces are searched. |         | no       |
+| `informer_sync_timeout` | `duration`              | Timeout for initial sync of PodMonitor resources.                                                     | `"1m"`  | no       |
 
 ## Blocks
 
 You can use the following blocks with `prometheus.operator.podmonitors`:
+
+{{< docs/alloy-config >}}
 
 | Name                                                | Description                                                                                 | Required |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------- | -------- |
@@ -59,9 +63,6 @@ You can use the following blocks with `prometheus.operator.podmonitors`:
 | [`selector`][selector]                              | Label selector for which PodMonitors to discover.                                           | no       |
 | `selector` > [`match_expression`][match_expression] | Label selector expression for which PodMonitors to discover.                                | no       |
 
-The > symbol indicates deeper levels of nesting.
-For example, `client` > `basic_auth` refers to a `basic_auth` block defined inside a `client` block.
-
 [client]: #client
 [basic_auth]: #basic_auth
 [authorization]: #authorization
@@ -72,6 +73,8 @@ For example, `client` > `basic_auth` refers to a `basic_auth` block defined insi
 [rule]: #rule
 [scrape]: #scrape
 [clustering]: #clustering
+
+{{< /docs/alloy-config >}}
 
 ### `client`
 
@@ -88,7 +91,7 @@ The following arguments are supported:
 | `bearer_token`           | `secret`            | Bearer token to authenticate with.                                                               |         | no       |
 | `enable_http2`           | `bool`              | Whether HTTP2 is supported for requests.                                                         | `true`  | no       |
 | `follow_redirects`       | `bool`              | Whether redirects returned by the server should be followed.                                     | `true`  | no       |
-| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |                      | no       |
+| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |         | no       |
 | `proxy_url`              | `string`            | HTTP proxy to send requests through.                                                             |         | no       |
 | `no_proxy`               | `string`            | Comma-separated list of IP addresses, CIDR notations, and domain names to exclude from proxying. |         | no       |
 | `proxy_from_environment` | `bool`              | Use the proxy URL indicated by environment variables.                                            | `false` | no       |
@@ -96,11 +99,11 @@ The following arguments are supported:
 
  At most, one of the following can be provided:
 
-* [`authorization`][authorization] block
-* [`basic_auth`][basic_auth] block
-* [`bearer_token_file`][client] argument
-* [`bearer_token`][client] argument
-* [`oauth2`][oauth2] block
+* [`authorization`](#authorization) block
+* [`basic_auth`](#basic_auth) block
+* [`bearer_token_file`](#client) argument
+* [`bearer_token`](#client) argument
+* [`oauth2`](#oauth2) block
 
 {{< docs/shared lookup="reference/components/http-client-proxy-config-description.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
@@ -141,7 +144,13 @@ If {{< param "PRODUCT_NAME" >}} is _not_ running in clustered mode, then the blo
 
 ### `rule`
 
+The `rule` block configures relabeling rules to apply to discovered scrape targets.
+The `drop` and `keep` actions filter targets, not individual metrics.
+To filter or relabel metrics after scraping, use a [`prometheus.relabel`][prometheus.relabel] component.
+
 {{< docs/shared lookup="reference/components/rule-block.md" source="alloy" version="<ALLOY_VERSION>" >}}
+
+[prometheus.relabel]: ../prometheus.relabel/
 
 ### `scrape`
 
@@ -178,12 +187,12 @@ The `operator` argument must be one of the following strings:
 * `"Exists"`
 * `"DoesNotExist"`
 
-If there are multiple `match_expressions` blocks inside of a `selector` block, they are combined together with AND clauses.
+If there are multiple `match_expressions` blocks inside of a `selector` block, they're combined together with AND clauses.
 
 ## Exported fields
 
 `prometheus.operator.podmonitors` doesn't export any fields.
-It forwards all metrics it scrapes to the receiver configures with the `forward_to` argument.
+It forwards all metrics it scrapes to the receiver configured with the `forward_to` argument.
 
 ## Component health
 
@@ -221,7 +230,7 @@ prometheus.operator.podmonitors "pods" {
 }
 ```
 
-This example will limit discovered PodMonitors to ones with the label `team=ops` in a specific namespace: `my-app`.
+The following example limits discovered PodMonitors to ones with the label `team=ops` in a specific namespace: `my-app`.
 
 ```alloy
 prometheus.operator.podmonitors "pods" {

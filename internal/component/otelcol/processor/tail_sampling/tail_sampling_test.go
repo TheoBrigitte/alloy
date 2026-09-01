@@ -1,5 +1,3 @@
-//go:build !race
-
 package tail_sampling
 
 import (
@@ -7,15 +5,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grafana/alloy/internal/component/otelcol"
-	"github.com/grafana/alloy/internal/component/otelcol/internal/fakeconsumer"
-	"github.com/grafana/alloy/internal/runtime/componenttest"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
-	"github.com/grafana/alloy/internal/util"
-	"github.com/grafana/alloy/syntax"
 	"github.com/grafana/dskit/backoff"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+
+	"github.com/grafana/alloy/internal/component/otelcol"
+	"github.com/grafana/alloy/internal/component/otelcol/internal/fakeconsumer"
+	"github.com/grafana/alloy/internal/runtime/componenttest"
+	"github.com/grafana/alloy/internal/util"
+	"github.com/grafana/alloy/syntax"
 )
 
 func TestBadAlloyConfig(t *testing.T) {
@@ -92,19 +90,30 @@ func TestBadOtelConfig(t *testing.T) {
 	traceCh := make(chan ptrace.Traces)
 	args.Output = makeTracesOutput(traceCh)
 
+	done := make(chan struct{})
 	go func() {
 		err := ctrl.Run(ctx, args)
 		require.Error(t, err, "unknown sampling policy type bad_type")
+		done <- struct{}{}
 	}()
 
+	select {
+	case <-time.After(2 * time.Second):
+		require.FailNow(t, "component never returned an error")
+	case <-done:
+	}
 	require.Error(t, ctrl.WaitRunning(time.Second), "component never started")
 }
 
 func TestBigConfig(t *testing.T) {
 	exampleBigConfig := `
     decision_wait               = "10s"
+    decision_wait_after_root_received = "5s"
     num_traces                  = 100
     expected_new_traces_per_sec = 10
+    sample_on_first_match = true
+    drop_pending_traces_on_shutdown = true
+    maximum_trace_size_bytes = 4096
     policy {
       name = "test-policy-1"
       type = "always_sample"
@@ -162,6 +171,15 @@ func TestBigConfig(t *testing.T) {
       type = "rate_limiting"
       rate_limiting {
         spans_per_second = 35
+        burst_capacity = 70
+      }
+    }
+    policy {
+      name = "test-policy-bytes-limiting"
+      type = "bytes_limiting"
+      bytes_limiting {
+        bytes_per_second = 2048
+        burst_capacity = 4096
       }
     }
     policy {
@@ -199,6 +217,10 @@ func TestBigConfig(t *testing.T) {
       }
     }
     policy {
+      name = "test-policy-trace-flags"
+      type = "trace_flags"
+    }
+    policy {
       name = "test-policy-13"
       type = "ottl_condition"
       ottl_condition {
@@ -233,6 +255,19 @@ func TestBigConfig(t *testing.T) {
           "name != \"test_span_event_name\"",
           "attributes[\"test_event_attr_key_2\"] != \"test_event_attr_val_1\"",
         ]
+      }
+    }
+    policy{
+      name = "not-policy-1"
+      type = "not"
+      not {
+        not_sub_policy {
+          name = "test-not-sub-policy-1"
+          type = "status_code"
+          status_code {
+            status_codes = ["ERROR"]
+          }
+        }
       }
     }
     policy{
@@ -277,6 +312,29 @@ func TestBigConfig(t *testing.T) {
               "name != \"test_span_event_name\"",
               "attributes[\"test_event_attr_key_2\"] != \"test_event_attr_val_1\"",
             ]
+          }
+        }
+        and_sub_policy {
+          name = "test-and-policy-5"
+          type = "bytes_limiting"
+          bytes_limiting {
+            bytes_per_second = 1024
+            burst_capacity = 2048
+          }
+        }
+      }
+    }
+    policy {
+      name = "drop-policy-1"
+      type = "drop"
+      drop {
+        drop_sub_policy {
+          name = "test-drop-policy-1"
+          type = "string_attribute"
+          string_attribute {
+            key = "http.route"
+            values = ["/health", "/metrics"]
+            enabled_regex_matching = true
           }
         }
       }
@@ -329,6 +387,14 @@ func TestBigConfig(t *testing.T) {
               "name != \"test_span_event_name\"",
               "attributes[\"test_event_attr_key_2\"] != \"test_event_attr_val_1\"",
             ]
+          }
+        }
+        composite_sub_policy {
+          name = "test-composite-policy-6"
+          type = "bytes_limiting"
+          bytes_limiting {
+            bytes_per_second = 512
+            burst_capacity = 1024
           }
         }
         rate_allocation {
@@ -416,7 +482,7 @@ func TestTraceProcessing(t *testing.T) {
 		for bo.Ongoing() {
 			err := exports.Input.ConsumeTraces(ctx, createTestTraces())
 			if err != nil {
-				level.Error(l).Log("msg", "failed to send traces", "err", err)
+				l.Error("failed to send traces", "err", err)
 				bo.Wait()
 				continue
 			}

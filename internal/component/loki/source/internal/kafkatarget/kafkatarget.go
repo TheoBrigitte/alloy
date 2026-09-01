@@ -6,21 +6,19 @@ package kafkatarget
 
 import (
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/IBM/sarama"
-	"github.com/go-kit/log"
-	"github.com/grafana/loki/v3/clients/pkg/promtail/targets/target"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/model/relabel"
 
 	"github.com/grafana/alloy/internal/component/common/loki"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 )
 
 type runnableDroppedTarget struct {
-	target.Target
+	Target
 	runFn func()
 }
 
@@ -28,8 +26,35 @@ func (d *runnableDroppedTarget) run() {
 	d.runFn()
 }
 
+type droppedTarget struct {
+	discoveredLabels model.LabelSet
+	reason           string
+}
+
+func newDroppedTarget(reason string, discoveredLabels model.LabelSet) *droppedTarget {
+	return &droppedTarget{
+		discoveredLabels: discoveredLabels,
+		reason:           reason,
+	}
+}
+
+// DiscoveredLabels implements Target
+func (d *droppedTarget) DiscoveredLabels() model.LabelSet {
+	return d.discoveredLabels
+}
+
+// Labels implements Target
+func (d *droppedTarget) Labels() model.LabelSet {
+	return nil
+}
+
+// Details implements Target it contains a message explaining the reason for dropping it
+func (d *droppedTarget) Details() any {
+	return d.reason
+}
+
 type KafkaTarget struct {
-	logger               log.Logger
+	logger               *slog.Logger
 	discoveredLabels     model.LabelSet
 	lbs                  model.LabelSet
 	details              ConsumerDetails
@@ -42,7 +67,7 @@ type KafkaTarget struct {
 }
 
 func NewKafkaTarget(
-	logger log.Logger,
+	logger *slog.Logger,
 	session sarama.ConsumerGroupSession,
 	claim sarama.ConsumerGroupClaim,
 	discoveredLabels, lbs model.LabelSet,
@@ -82,10 +107,10 @@ func (t *KafkaTarget) run() {
 
 		// TODO: Possibly need to format after merging with discovered labels because we can specify multiple labels in source labels
 		// https://github.com/grafana/loki/pull/4745#discussion_r750022234
-		lbs := format([]labels.Label{
-			{Name: labelKeyKafkaMessageKey, Value: mk},
-			{Name: labelKeyKafkaOffset, Value: fmt.Sprintf("%v", message.Offset)},
-		}, t.relabelConfig)
+		lbs := format(labels.New(
+			labels.Label{Name: labelKeyKafkaMessageKey, Value: mk},
+			labels.Label{Name: labelKeyKafkaOffset, Value: fmt.Sprintf("%v", message.Offset)},
+		), t.relabelConfig)
 
 		out := t.lbs.Clone()
 		if len(lbs) > 0 {
@@ -93,7 +118,7 @@ func (t *KafkaTarget) run() {
 		}
 		entries, err := t.messageParser.Parse(message, out, t.relabelConfig, t.useIncomingTimestamp)
 		if err != nil {
-			level.Error(t.logger).Log("msg", "message parsing error", "err", err)
+			t.logger.Error("message parsing error", "err", err)
 		} else {
 			for _, entry := range entries {
 				t.client.Chan() <- entry
@@ -111,24 +136,16 @@ func timestamp(useIncoming bool, incoming time.Time) time.Time {
 	return time.Now()
 }
 
-func (t *KafkaTarget) Type() target.TargetType {
-	return target.KafkaTargetType
-}
-
-func (t *KafkaTarget) Ready() bool {
-	return true
+func (t *KafkaTarget) Labels() model.LabelSet {
+	return t.lbs
 }
 
 func (t *KafkaTarget) DiscoveredLabels() model.LabelSet {
 	return t.discoveredLabels
 }
 
-func (t *KafkaTarget) Labels() model.LabelSet {
-	return t.lbs
-}
-
 // Details returns target-specific details.
-func (t *KafkaTarget) Details() interface{} {
+func (t *KafkaTarget) Details() any {
 	return t.details
 }
 

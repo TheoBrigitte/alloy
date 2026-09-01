@@ -1,17 +1,17 @@
-import { FC, Fragment, ReactElement } from 'react';
-import { Link } from 'react-router-dom';
-import { useLocation } from 'react-router-dom';
 import { faBug, faCubes, faDiagramProject, faLink } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { type FC, Fragment, type ReactElement } from 'react';
+import { Link } from 'react-router';
+import { useLocation } from 'react-router';
 
+import { componentDocsUrl } from '../../utils/docs';
 import { partitionBody } from '../../utils/partition';
-
 import ComponentBody from './ComponentBody';
 import ComponentList from './ComponentList';
-import { HealthLabel } from './HealthLabel';
-import { ComponentDetail, ComponentInfo, PartitionedBody } from './types';
-
 import styles from './ComponentView.module.css';
+import ForeachList from './ForeachList';
+import { HealthLabel } from './HealthLabel';
+import type { ComponentDetail, ComponentInfo, PartitionedBody } from './types';
 
 export interface ComponentViewProps {
   component: ComponentDetail;
@@ -31,9 +31,8 @@ export const ComponentView: FC<ComponentViewProps> = (props) => {
   const location = useLocation();
   const useRemotecfg = location.pathname.startsWith('/remotecfg');
 
-  // TODO: update this condition when foreach is supported
-  const showGraph = props.component.moduleInfo && props.component.name !== 'foreach';
-
+  const isModule = props.component.moduleInfo && props.component.name !== 'foreach';
+  const isForeach = props.component.moduleInfo && props.component.name === 'foreach';
   function partitionTOC(partition: PartitionedBody): ReactElement {
     return (
       <li>
@@ -116,12 +115,12 @@ export const ComponentView: FC<ComponentViewProps> = (props) => {
         </h1>
 
         <div className={styles.docsLink}>
-          <a href={`https://grafana.com/docs/alloy/latest/reference/components/${props.component.name}`}>
+          <a href={componentDocsUrl(props.component.name)}>
             <FontAwesomeIcon icon={faLink} /> Documentation
           </a>
         </div>
 
-        {showGraph && (
+        {isModule && (
           <div className={styles.debugLink}>
             <a href={`graph/${pathJoin([props.component.moduleID, props.component.localID])}`}>
               <FontAwesomeIcon icon={faDiagramProject} /> Graph
@@ -165,11 +164,20 @@ export const ComponentView: FC<ComponentViewProps> = (props) => {
           </section>
         )}
 
-        {props.component.moduleInfo && (
+        {isModule && props.component.moduleInfo && (
           <section id="module">
             <h2>Module components</h2>
             <div className={styles.sectionContent}>
               <ComponentList components={props.component.moduleInfo} useRemotecfg={useRemotecfg} />
+            </div>
+          </section>
+        )}
+
+        {isForeach && (
+          <section id="foreach">
+            <h2>Foreach components</h2>
+            <div className={styles.sectionContent}>
+              <ForeachList foreach={props.component} useRemotecfg={useRemotecfg} />
             </div>
           </section>
         )}

@@ -1,5 +1,4 @@
 //go:build linux
-// +build linux
 
 package alloycli
 
@@ -7,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/KimMachineGun/automemlimit/memlimit"
+
 	"github.com/grafana/alloy/internal/runtime/logging"
 )
 

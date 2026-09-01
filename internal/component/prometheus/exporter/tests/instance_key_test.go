@@ -3,12 +3,10 @@ package exporter_test
 import (
 	"fmt"
 	"net"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/go-kit/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -22,6 +20,7 @@ import (
 	"github.com/grafana/alloy/internal/component/prometheus/exporter/catchpoint"
 	"github.com/grafana/alloy/internal/component/prometheus/exporter/cloudwatch"
 	"github.com/grafana/alloy/internal/component/prometheus/exporter/consul"
+	"github.com/grafana/alloy/internal/component/prometheus/exporter/databricks"
 	"github.com/grafana/alloy/internal/component/prometheus/exporter/dnsmasq"
 	"github.com/grafana/alloy/internal/component/prometheus/exporter/elasticsearch"
 	"github.com/grafana/alloy/internal/component/prometheus/exporter/gcp"
@@ -39,10 +38,12 @@ import (
 	"github.com/grafana/alloy/internal/component/prometheus/exporter/snmp"
 	"github.com/grafana/alloy/internal/component/prometheus/exporter/snowflake"
 	"github.com/grafana/alloy/internal/component/prometheus/exporter/squid"
+	"github.com/grafana/alloy/internal/component/prometheus/exporter/static"
 	"github.com/grafana/alloy/internal/component/prometheus/exporter/statsd"
 	"github.com/grafana/alloy/internal/component/prometheus/exporter/unix"
 	"github.com/grafana/alloy/internal/component/prometheus/exporter/windows"
-	http_service "github.com/grafana/alloy/internal/service/http"
+	httpservice "github.com/grafana/alloy/internal/service/http"
+	"github.com/grafana/alloy/internal/util"
 	"github.com/grafana/alloy/syntax/alloytypes"
 )
 
@@ -80,7 +81,7 @@ func TestInstanceKey(t *testing.T) {
 				ResourceType:  "Microsoft.Storage/storageAccounts",
 				Metrics:       []string{"Availability"},
 			},
-			expectedInstanceLabel: "0cd3771ca70c15c7d7a14da3ab603c85",
+			expectedInstanceLabel: "aa354aa3a12cfb94dc18a0c65eeb5384",
 		},
 		{
 			testName:      "blackbox",
@@ -95,8 +96,8 @@ func TestInstanceKey(t *testing.T) {
 				},
 			},
 			temporaryHostname: "test-agent",
-			// TODO: this is not desired - the instance should reflect the target being exported
-			expectedInstanceLabel: "test-agent",
+			// Blackbox exporter can target many hosts, so we don't have anything reliable to use.
+			expectedInstanceLabel: "prometheus.exporter.blackbox.test_comp_id",
 		},
 		{
 			testName:      "cadvisor",
@@ -114,16 +115,17 @@ func TestInstanceKey(t *testing.T) {
 			args: catchpoint.Arguments{
 				Port: "9090",
 			},
-			// TODO: this is not desired - catchpoint exporter is a webhook endpoint that is called by catchpoint
-			//       we don't know where it is called from. Port is better than hostname, but not ideal.
+			// Port is better than hostname, but not ideal. Catchpoint is a webhook called externally, so there is no
+			// clearly better option here.
 			expectedInstanceLabel: "9090",
 		},
 		{
 			testName:      "cloudwatch",
 			componentName: "prometheus.exporter.cloudwatch",
 			args: cloudwatch.Arguments{
-				STSRegion:    "us-west-2",
-				FIPSDisabled: true,
+				STSRegion:         "us-west-2",
+				FIPSDisabled:      true,
+				UseAWSSDKVersion2: true,
 				Discovery: []cloudwatch.DiscoveryJob{
 					{
 						Type: "AWS/EC2",
@@ -155,6 +157,17 @@ func TestInstanceKey(t *testing.T) {
 				Server: "http://host01:8500",
 			},
 			expectedInstanceLabel: "host01:8500",
+		},
+		{
+			testName:      "databricks",
+			componentName: "prometheus.exporter.databricks",
+			args: databricks.Arguments{
+				ServerHostname:    "dbc-abc123.cloud.databricks.com",
+				WarehouseHTTPPath: "/sql/1.0/warehouses/abc123",
+				ClientID:          "test-client-id",
+				ClientSecret:      "test-client-secret",
+			},
+			expectedInstanceLabel: "dbc-abc123.cloud.databricks.com",
 		},
 		{
 			testName:      "dnsmasq",
@@ -198,7 +211,7 @@ func TestInstanceKey(t *testing.T) {
 				Organizations: []string{"org1", "org2"},
 				Users:         []string{"user1", "user2"},
 			},
-			// TODO: it may not be enough - we may need the repositories and orgs? or use hash?
+			// This is better than hostname, but it may not be enough - we may need the repositories and orgs?
 			expectedInstanceLabel: "api.github.com:8080",
 		},
 		// TODO: kafka exporters won't build successfully if it cannot connect right away to kafka. This is not
@@ -281,6 +294,27 @@ func TestInstanceKey(t *testing.T) {
 			expectedInstanceLabel: "host01:1521",
 		},
 		{
+			testName:      "oracledb multiple databases",
+			componentName: "prometheus.exporter.oracledb",
+			args: oracledb.Arguments{
+				Databases: []oracledb.DatabaseTarget{
+					{
+						Name:             "db_a",
+						ConnectionString: "host01:1521/svc_a",
+						Username:         "u",
+						Password:         "p",
+					},
+					{
+						Name:             "db_b",
+						ConnectionString: "host02:1521/svc_b",
+						Username:         "u",
+						Password:         "p",
+					},
+				},
+			},
+			expectedInstanceLabel: "prometheus.exporter.oracledb.test_comp_id",
+		},
+		{
 			testName:      "postgres",
 			componentName: "prometheus.exporter.postgres",
 			args: postgres.Arguments{
@@ -297,7 +331,6 @@ func TestInstanceKey(t *testing.T) {
 					alloytypes.Secret("postgresql://host02:5432/dbname"),
 				},
 			},
-			// TODO: this is a good alternative, but perhaps there are better options?
 			expectedInstanceLabel: "prometheus.exporter.postgres.test_comp_id",
 		},
 		{
@@ -335,8 +368,8 @@ func TestInstanceKey(t *testing.T) {
 				},
 			},
 			temporaryHostname: "test-agent",
-			// TODO: this is likely not desired. SNMP can be multiple remote hosts.
-			expectedInstanceLabel: "test-agent",
+			// SNMP can be used for many targets, there is no better target name we can be certain of
+			expectedInstanceLabel: "prometheus.exporter.snmp.test_comp_id",
 		},
 		{
 			testName:      "snowflake",
@@ -370,8 +403,8 @@ func TestInstanceKey(t *testing.T) {
 				CacheType:  "lru",
 			},
 			temporaryHostname: "test-agent",
-			// TODO: this is likely not desired - statsd opens a listener and receives data from different sources
-			expectedInstanceLabel: "test-agent",
+			// StatsD exporter can receive data from network, so the best default we have is
+			expectedInstanceLabel: "prometheus.exporter.statsd.test_comp_id",
 		},
 		{
 			testName:      "unix",
@@ -387,10 +420,23 @@ func TestInstanceKey(t *testing.T) {
 			testName:      "windows",
 			componentName: "prometheus.exporter.windows",
 			args: windows.Arguments{
-				EnabledCollectors: []string{"cpu", "cs", "logical_disk", "net", "os", "service", "system"},
+				EnabledCollectors: []string{},
+				LogicalDisk: windows.LogicalDiskConfig{
+					EnabledList: []string{"metrics"},
+				},
+				Net: windows.NetConfig{
+					EnabledList: []string{"metrics"},
+				},
 			},
 			temporaryHostname:     "test-agent",
 			expectedInstanceLabel: "test-agent",
+		},
+		{
+			testName:              "static",
+			componentName:         "prometheus.exporter.static",
+			args:                  static.Arguments{},
+			temporaryHostname:     "test-agent",
+			expectedInstanceLabel: "prometheus.exporter.static.test_comp_id",
 		},
 	}
 
@@ -400,10 +446,10 @@ func TestInstanceKey(t *testing.T) {
 			var capturedExports exporter.Exports
 			opts := component.Options{
 				ID: tt.componentName + ".test_comp_id",
-				GetServiceData: func(name string) (interface{}, error) {
+				GetServiceData: func(name string) (any, error) {
 					switch name {
-					case http_service.ServiceName:
-						return http_service.Data{
+					case httpservice.ServiceName:
+						return httpservice.Data{
 							HTTPListenAddr:   "localhost:12345",
 							MemoryListenAddr: "alloy.internal:1245",
 							BaseHTTPPath:     "/",
@@ -420,7 +466,7 @@ func TestInstanceKey(t *testing.T) {
 						t.Fatalf("failed to convert component.Exports to exporter.Exports")
 					}
 				},
-				Logger: log.NewLogfmtLogger(os.Stdout),
+				Logger: util.TestAlloyLogger(t).Slog(),
 			}
 			reg, ok := component.Get(tt.componentName)
 			require.True(t, ok, "expected component to exist in registry")

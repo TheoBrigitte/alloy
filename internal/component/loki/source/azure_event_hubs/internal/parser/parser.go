@@ -12,12 +12,12 @@ import (
 	"time"
 
 	"github.com/IBM/sarama"
-	"github.com/grafana/loki/v3/pkg/logproto"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/model/relabel"
 
 	"github.com/grafana/alloy/internal/component/common/loki"
+	"github.com/grafana/loki/pkg/push"
 )
 
 type azureMonitorResourceLogs struct {
@@ -132,14 +132,11 @@ func (e *AzureEventHubsTargetMessageParser) tryUnmarshal(message []byte) (*azure
 	return data, nil
 }
 
-func (e *AzureEventHubsTargetMessageParser) entryWithCustomPayload(body []byte, labelSet model.LabelSet, messageTime time.Time) loki.Entry {
-	return loki.Entry{
-		Labels: labelSet,
-		Entry: logproto.Entry{
-			Timestamp: messageTime,
-			Line:      string(body),
-		},
-	}
+func (e *AzureEventHubsTargetMessageParser) entryWithCustomPayload(body []byte, lset model.LabelSet, messageTime time.Time) loki.Entry {
+	return loki.NewEntry(lset, push.Entry{
+		Timestamp: messageTime,
+		Line:      string(body),
+	})
 }
 
 // processRecords handles the case when message is a valid json with a key `records`. It can be either a custom payload or a resource log.
@@ -158,7 +155,7 @@ func (e *AzureEventHubsTargetMessageParser) processRecords(labelSet model.LabelS
 
 // parseRecord parses a single value from the "records" in the original message.
 // It can also handle a case when the record contains custom data and doesn't match the schema for Azure resource logs.
-func (e *AzureEventHubsTargetMessageParser) parseRecord(record []byte, labelSet model.LabelSet, relabelConfig []*relabel.Config, useIncomingTimestamp bool, messageTime time.Time) (loki.Entry, error) {
+func (e *AzureEventHubsTargetMessageParser) parseRecord(record []byte, lset model.LabelSet, relabelConfig []*relabel.Config, useIncomingTimestamp bool, messageTime time.Time) (loki.Entry, error) {
 	logRecord := &azureMonitorResourceLog{}
 	err := json.Unmarshal(record, logRecord)
 	if err == nil {
@@ -170,19 +167,15 @@ func (e *AzureEventHubsTargetMessageParser) parseRecord(record []byte, labelSet 
 			return loki.Entry{}, err
 		}
 
-		return e.entryWithCustomPayload(record, labelSet, messageTime), nil
+		return e.entryWithCustomPayload(record, lset, messageTime), nil
 	}
 
 	logLabels := e.getLabels(logRecord, relabelConfig)
-	ts := e.getTime(messageTime, useIncomingTimestamp, logRecord)
 
-	return loki.Entry{
-		Labels: labelSet.Merge(logLabels),
-		Entry: logproto.Entry{
-			Timestamp: ts,
-			Line:      string(record),
-		},
-	}, nil
+	return loki.NewEntry(lset.Merge(logLabels), push.Entry{
+		Timestamp: e.getTime(messageTime, useIncomingTimestamp, logRecord),
+		Line:      string(record),
+	}), nil
 }
 
 func (e *AzureEventHubsTargetMessageParser) getTime(messageTime time.Time, useIncomingTimestamp bool, logRecord *azureMonitorResourceLog) time.Time {
@@ -199,34 +192,39 @@ func (e *AzureEventHubsTargetMessageParser) getTime(messageTime time.Time, useIn
 }
 
 func (e *AzureEventHubsTargetMessageParser) getLabels(logRecord *azureMonitorResourceLog, relabelConfig []*relabel.Config) model.LabelSet {
-	lbs := labels.Labels{
-		{
-			Name:  "__azure_event_hubs_category",
-			Value: logRecord.Category,
-		},
-	}
+	lbs := labels.New(labels.Label{
+		Name:  "__azure_event_hubs_category",
+		Value: logRecord.Category,
+	})
 
 	var processed labels.Labels
 	// apply relabeling
 	if len(relabelConfig) > 0 {
-		processed, _ = relabel.Process(lbs, relabelConfig...)
+		lb := labels.NewBuilder(lbs)
+		if relabel.ProcessBuilder(lb, relabelConfig...) {
+			processed = lb.Labels()
+		} else {
+			processed = labels.EmptyLabels()
+		}
 	} else {
 		processed = lbs
 	}
 
 	// final labelset that will be sent to loki
 	resultLabels := make(model.LabelSet)
-	for _, lbl := range processed {
+	processed.Range(func(lbl labels.Label) {
 		// ignore internal labels
 		if strings.HasPrefix(lbl.Name, "__") {
-			continue
+			return
 		}
 		// ignore invalid labels
+		// TODO: add support for different validation schemes.
+		//nolint:staticcheck
 		if !model.LabelName(lbl.Name).IsValid() || !model.LabelValue(lbl.Value).IsValid() {
-			continue
+			return
 		}
 		resultLabels[model.LabelName(lbl.Name)] = model.LabelValue(lbl.Value)
-	}
+	})
 
 	return resultLabels
 }

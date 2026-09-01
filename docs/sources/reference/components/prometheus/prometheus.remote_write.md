@@ -5,6 +5,8 @@ aliases:
 description: Learn about prometheus.remote_write
 labels:
   stage: general-availability
+  products:
+    - oss
 title: prometheus.remote_write
 ---
 
@@ -36,38 +38,40 @@ prometheus.remote_write "<LABEL>" {
 You can use the following argument with `prometheus.remote_write`:
 
 | Name              | Type          | Description                                     | Default | Required |
-| ----------------- | ------------- | ----------------------------------------------- | ------- | -------- |
+|-------------------|---------------|-------------------------------------------------|---------|----------|
 | `external_labels` | `map(string)` | Labels to add to metrics sent over the network. |         | no       |
 
 ## Blocks
 
 You can use the following blocks with `prometheus.remote_write`:
 
-| Block                                                           | Description                                                                | Required |
-| --------------------------------------------------------------- | -------------------------------------------------------------------------- | -------- |
-| [`endpoint`][endpoint]                                          | Location to send metrics to.                                               | no       |
-| `endpoint` > [`authorization`][authorization]                   | Configure generic authorization to the endpoint.                           | no       |
-| `endpoint` > [`azuread`][azuread]                               | Configure AzureAD for authenticating to the endpoint.                      | no       |
-| `endpoint` > `azuread` > [`managed_identity`][managed_identity] | Configure Azure user-assigned managed identity.                            | yes      |
-| `endpoint` > `azuread` > [`oauth`][oauth]                       | Configure Azure OAuth.                                                     | yes      |
-| `endpoint` > `azuread` > [`sdk`][sdk]                           | Configure Azure SDK authentication.                                        | yes      |
-| `endpoint` > [`basic_auth`][basic_auth]                         | Configure `basic_auth` for authenticating to the endpoint.                 | no       |
-| `endpoint` > [`metadata_config`][metadata_config]               | Configuration for how metric metadata is sent.                             | no       |
-| `endpoint` > [`oauth2`][oauth2]                                 | Configure OAuth 2.0 for authenticating to the endpoint.                    | no       |
-| `endpoint` > `oauth2` > [`tls_config`][tls_config]              | Configure TLS settings for connecting to the endpoint.                     | no       |
-| `endpoint` > [`queue_config`][queue_config]                     | Configuration for how metrics are batched before sending.                  | no       |
-| `endpoint` > [`sigv4`][sigv4]                                   | Configure AWS Signature Verification 4 for authenticating to the endpoint. | no       |
-| `endpoint` > [`tls_config`][tls_config]                         | Configure TLS settings for connecting to the endpoint.                     | no       |
-| `endpoint` > [`write_relabel_config`][write_relabel_config]     | Configuration for `write_relabel_config`.                                  | no       |
-| [`wal`][wal]                                                    | Configuration for the component's WAL.                                     | no       |
+{{< docs/alloy-config >}}
 
-The > symbol indicates deeper levels of nesting.
-For example, `endpoint` > `basic_auth` refers to a `basic_auth` block defined inside an `endpoint` block.
+| Block                                                             | Description                                                                | Required |
+|-------------------------------------------------------------------|----------------------------------------------------------------------------|----------|
+| [`endpoint`][endpoint]                                            | Location to send metrics to.                                               | no       |
+| `endpoint` > [`authorization`][authorization]                     | Configure generic authorization to the endpoint.                           | no       |
+| `endpoint` > [`azuread`][azuread]                                 | Configure AzureAD for authenticating to the endpoint.                      | no       |
+| `endpoint` > `azuread` > [`managed_identity`][managed_identity]   | Configure Azure user-assigned managed identity.                            | yes      |
+| `endpoint` > `azuread` > [`oauth`][oauth]                         | Configure Azure OAuth.                                                     | yes      |
+| `endpoint` > `azuread` > [`sdk`][sdk]                             | Configure Azure SDK authentication.                                        | yes      |
+| `endpoint` > `azuread` > [`workload_identity`][workload_identity] | Configure Microsoft Entra Workload ID.                                     | yes      |
+| `endpoint` > [`basic_auth`][basic_auth]                           | Configure `basic_auth` for authenticating to the endpoint.                 | no       |
+| `endpoint` > [`google_iam`][google_iam]                           | Configure Google IAM authentication for the endpoint.                      | no       |
+| `endpoint` > [`metadata_config`][metadata_config]                 | Configuration for how metric metadata is sent.                             | no       |
+| `endpoint` > [`oauth2`][oauth2]                                   | Configure OAuth 2.0 for authenticating to the endpoint.                    | no       |
+| `endpoint` > `oauth2` > [`tls_config`][tls_config]                | Configure TLS settings for connecting to the endpoint.                     | no       |
+| `endpoint` > [`queue_config`][queue_config]                       | Configuration for how metrics are batched before sending.                  | no       |
+| `endpoint` > [`sigv4`][sigv4]                                     | Configure AWS Signature Verification 4 for authenticating to the endpoint. | no       |
+| `endpoint` > [`tls_config`][tls_config]                           | Configure TLS settings for connecting to the endpoint.                     | no       |
+| `endpoint` > [`write_relabel_config`][write_relabel_config]       | Configuration for `write_relabel_config`.                                  | no       |
+| [`wal`][wal]                                                      | Configuration for the component's WAL.                                     | no       |
 
 [endpoint]: #endpoint
 [authorization]: #authorization
 [azuread]: #azuread
 [basic_auth]: #basic_auth
+[google_iam]: #google_iam
 [managed_identity]: #managed_identity
 [metadata_config]: #metadata_config
 [oauth]: #oauth
@@ -77,7 +81,10 @@ For example, `endpoint` > `basic_auth` refers to a `basic_auth` block defined in
 [sigv4]: #sigv4
 [tls_config]: #tls_config
 [wal]: #wal
+[workload_identity]: #workload_identity
 [write_relabel_config]: #write_relabel_config
+
+{{< /docs/alloy-config >}}
 
 ### `endpoint`
 
@@ -86,33 +93,36 @@ You can define multiple `endpoint` blocks to send metrics to multiple locations.
 
 The following arguments are supported:
 
-| Name                     | Type                | Description                                                                                      | Default | Required |
-| ------------------------ | ------------------- | ------------------------------------------------------------------------------------------------ | ------- | -------- |
-| `url`                    | `string`            | Full URL to send metrics to.                                                                     |         | yes      |
-| `bearer_token_file`      | `string`            | File containing a bearer token to authenticate with.                                             |         | no       |
-| `bearer_token`           | `secret`            | Bearer token to authenticate with.                                                               |         | no       |
-| `enable_http2`           | `bool`              | Whether HTTP2 is supported for requests.                                                         | `true`  | no       |
-| `follow_redirects`       | `bool`              | Whether redirects returned by the server should be followed.                                     | `true`  | no       |
-| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |                      | no       |
-| `headers`                | `map(string)`       | Extra headers to deliver with the request.                                                       |         | no       |
-| `name`                   | `string`            | Optional name to identify the endpoint in metrics.                                               |         | no       |
-| `no_proxy`               | `string`            | Comma-separated list of IP addresses, CIDR notations, and domain names to exclude from proxying. |         | no       |
-| `proxy_connect_header`   | `map(list(secret))` | Specifies headers to send to proxies during CONNECT requests.                                    |         | no       |
-| `proxy_from_environment` | `bool`              | Use the proxy URL indicated by environment variables.                                            | `false` | no       |
-| `proxy_url`              | `string`            | HTTP proxy to send requests through.                                                             |         | no       |
-| `remote_timeout`         | `duration`          | Timeout for requests made to the URL.                                                            | `"30s"` | no       |
-| `send_exemplars`         | `bool`              | Whether exemplars should be sent.                                                                | `true`  | no       |
-| `send_native_histograms` | `bool`              | Whether native histograms should be sent.                                                        | `false` | no       |
+| Name                     | Type                | Description                                                                                                                          | Default                     | Required |
+|--------------------------|---------------------|--------------------------------------------------------------------------------------------------------------------------------------|-----------------------------|----------|
+| `url`                    | `string`            | Full URL to send metrics to.                                                                                                         |                             | yes      |
+| `bearer_token_file`      | `string`            | File containing a bearer token to authenticate with.                                                                                 |                             | no       |
+| `bearer_token`           | `secret`            | Bearer token to authenticate with.                                                                                                   |                             | no       |
+| `enable_http2`           | `bool`              | Whether HTTP2 is supported for requests.                                                                                             | `false`                     | no       |
+| `follow_redirects`       | `bool`              | Whether redirects returned by the server should be followed.                                                                         | `true`                      | no       |
+| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.                                              |                             | no       |
+| `headers`                | `map(string)`       | Extra headers to deliver with the request.                                                                                           |                             | no       |
+| `name`                   | `string`            | Optional name to identify the endpoint in metrics.                                                                                   |                             | no       |
+| `no_proxy`               | `string`            | Comma-separated list of IP addresses, CIDR notations, and domain names to exclude from proxying.                                     |                             | no       |
+| `protobuf_message`       | `string`            | Protobuf message format to use for remote write. Must be `prometheus.WriteRequest` or experimental `io.prometheus.write.v2.Request`. | `"prometheus.WriteRequest"` | no       |
+| `proxy_connect_header`   | `map(list(secret))` | Specifies headers to send to proxies during CONNECT requests.                                                                        |                             | no       |
+| `proxy_from_environment` | `bool`              | Use the proxy URL indicated by environment variables.                                                                                | `false`                     | no       |
+| `proxy_url`              | `string`            | HTTP proxy to send requests through.                                                                                                 |                             | no       |
+| `remote_timeout`         | `duration`          | Timeout for requests made to the URL.                                                                                                | `"30s"`                     | no       |
+| `round_robin_dns`        | `bool`              | Whether to round-robin requests across the resolved DNS addresses of the endpoint.                                                   | `false`                     | no       |
+| `send_exemplars`         | `bool`              | Whether exemplars should be sent.                                                                                                    | `true`                      | no       |
+| `send_native_histograms` | `bool`              | Whether native histograms should be sent.                                                                                            | `false`                     | no       |
 
  At most, one of the following can be provided:
 
-* [`authorization`][authorization] block
-* [`azuread`][azuread] block
-* [`basic_auth`][basic_auth] block
+* [`authorization`](#authorization) block
+* [`azuread`](#azuread) block
+* [`basic_auth`](#basic_auth) block
 * [`bearer_token_file`](#endpoint) argument
 * [`bearer_token`](#endpoint) argument
-* [`oauth2`][oauth2] block
-* [`sigv4`][sigv4] block
+* [`google_iam`](#google_iam) block
+* [`oauth2`](#oauth2) block
+* [`sigv4`](#sigv4) block
 
 When multiple `endpoint` blocks are provided, metrics are concurrently sent to all configured locations.
 Each endpoint has a _queue_ which is used to read metrics from the WAL and queue them for sending.
@@ -122,6 +132,9 @@ Endpoints can be named for easier identification in debug metrics using the `nam
 If the `name` argument isn't provided, a name is generated based on a hash of the endpoint settings.
 
 When `send_native_histograms` is `true`, native Prometheus histogram samples sent to `prometheus.remote_write` are forwarded to the configured endpoint.
+
+For an end-to-end scrape-and-forward example, refer to [Collect Prometheus native histograms](../../../collect/prometheus-native-histograms/).
+
 If the endpoint doesn't support receiving native histogram samples, pushing metrics fails.
 
 {{< docs/shared lookup="reference/components/http-client-proxy-config-description.md" source="alloy" version="<ALLOY_VERSION>" >}}
@@ -134,23 +147,31 @@ If the endpoint doesn't support receiving native histogram samples, pushing metr
 
 {{< docs/shared lookup="reference/components/azuread-block.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
+You must configure exactly one of the [`managed_identity`](#managed_identity), [`oauth`](#oauth), [`sdk`](#sdk), or [`workload_identity`](#workload_identity) blocks.
+
 ### `managed_identity`
 
-<span class="badge docs-labels__stage docs-labels__item">Required</span>
+{{< badge text="Required" >}}
 
 {{< docs/shared lookup="reference/components/azure-managed_identity-block.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
 ### `oauth`
 
-<span class="badge docs-labels__stage docs-labels__item">Required</span>
+{{< badge text="Required" >}}
 
 {{< docs/shared lookup="reference/components/azure-oauth-block.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
 ### `sdk`
 
-<span class="badge docs-labels__stage docs-labels__item">Required</span>
+{{< badge text="Required" >}}
 
 {{< docs/shared lookup="reference/components/azuread-sdk.md" source="alloy" version="<ALLOY_VERSION>" >}}
+
+### `workload_identity`
+
+{{< badge text="Required" >}}
+
+{{< docs/shared lookup="reference/components/azure-workload_identity-block.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
 ### `basic_auth`
 
@@ -159,7 +180,7 @@ If the endpoint doesn't support receiving native histogram samples, pushing metr
 ### `metadata_config`
 
 | Name                   | Type       | Description                                                         | Default | Required |
-| ---------------------- | ---------- | ------------------------------------------------------------------- | ------- | -------- |
+|------------------------|------------|---------------------------------------------------------------------|---------|----------|
 | `max_samples_per_send` | `number`   | Maximum number of metadata samples to send to the endpoint at once. | `2000`  | no       |
 | `send_interval`        | `duration` | How frequently metric metadata is sent to the endpoint.             | `"1m"`  | no       |
 | `send`                 | `bool`     | Controls whether metric metadata is sent to the endpoint.           | `true`  | no       |
@@ -175,7 +196,7 @@ If the endpoint doesn't support receiving native histogram samples, pushing metr
 ### `queue_config`
 
 | Name                   | Type       | Description                                                          | Default  | Required |
-| ---------------------- | ---------- | -------------------------------------------------------------------- | -------- | -------- |
+|------------------------|------------|----------------------------------------------------------------------|----------|----------|
 | `batch_send_deadline`  | `duration` | Maximum time samples wait in the buffer before sending.              | `"5s"`   | no       |
 | `capacity`             | `number`   | Number of samples to buffer per shard.                               | `10000`  | no       |
 | `max_backoff`          | `duration` | Maximum retry delay.                                                 | `"5s"`   | no       |
@@ -213,6 +234,14 @@ The default value is `0s`, which means that all samples are sent (feature is dis
 
 {{< docs/shared lookup="reference/components/sigv4-block.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
+### `google_iam`
+
+The `google_iam` block configures Google IAM authentication for the endpoint.
+
+| Name               | Type     | Description                                                        | Default | Required |
+|--------------------|----------|--------------------------------------------------------------------|---------|----------|
+| `credentials_file` | `string` | Path to a Google Cloud credentials JSON file used to authenticate. |         | no       |
+
 ### `write_relabel_config`
 
 {{< docs/shared lookup="reference/components/write_relabel_config.md" source="alloy" version="<ALLOY_VERSION>" >}}
@@ -222,7 +251,7 @@ The default value is `0s`, which means that all samples are sent (feature is dis
 The `wal` block customizes the Write-Ahead Log (WAL) used to temporarily store metrics before they're sent to the configured set of endpoints.
 
 | Name                 | Type       | Description                                                    | Default | Required |
-| -------------------- | ---------- | -------------------------------------------------------------- | ------- | -------- |
+|----------------------|------------|----------------------------------------------------------------|---------|----------|
 | `truncate_frequency` | `duration` | How frequently to clean up the WAL.                            | `"2h"`  | no       |
 | `min_keepalive_time` | `duration` | Minimum time to keep data in the WAL before it can be removed. | `"5m"`  | no       |
 | `max_keepalive_time` | `duration` | Maximum time to keep data in the WAL before removing it.       | `"8h"`  | no       |
@@ -247,7 +276,7 @@ Samples aren't removed until they're at least as old as `min_keepalive_time`, an
 The following fields are exported and can be referenced by other components:
 
 | Name       | Type              | Description                                                |
-| ---------- | ----------------- | ---------------------------------------------------------- |
+|------------|-------------------|------------------------------------------------------------|
 | `receiver` | `MetricsReceiver` | A value which other components can use to send metrics to. |
 
 ## Component health
@@ -289,6 +318,7 @@ In those cases, exported fields are kept at their last healthy values.
 * `prometheus_remote_storage_shards` (gauge): The number of shards used for concurrent delivery of metrics to an endpoint.
 * `prometheus_remote_write_wal_exemplars_appended_total` (counter): Total number of exemplars appended to the WAL.
 * `prometheus_remote_write_wal_out_of_order_samples_total` (counter): Total number of out of order samples ingestion failed attempts.
+* `prometheus_remote_write_wal_metadata_updates_total` (counter): Total number of metadata updates sent through the WAL.
 * `prometheus_remote_write_wal_samples_appended_total` (counter): Total number of samples appended to the WAL.
 * `prometheus_remote_write_wal_storage_active_series` (gauge): Current number of active series being tracked by the WAL.
 * `prometheus_remote_write_wal_storage_created_series_total` (counter): Total number of created series appended to the WAL.
@@ -345,6 +375,20 @@ prometheus.remote_write "staging" {
 }
 ```
 
+### Experimental: Send metrics using Remote Write v2 protocol
+
+{{< docs/shared lookup="stability/experimental_feature.md" source="alloy" version="<ALLOY_VERSION>" >}}
+
+You can configure `prometheus.remote_write` to use the Remote Write v2 protocol if your endpoint supports it:
+
+```alloy
+prometheus.remote_write "v2_example" {
+  endpoint {
+    url = "http://mimir:9009/api/v1/push"
+    protobuf_message = "io.prometheus.write.v2.Request"
+  }
+}
+```
 ### Send metrics to a managed service
 
 You can create a `prometheus.remote_write` component that sends your metrics to a managed service, for example, Grafana Cloud.
@@ -390,9 +434,9 @@ To troubleshoot, take the following steps in order:
    ./promtool tsdb dump --match='{__name__="otelcol_connector_spanmetrics_duration_seconds_bucket", http_method="GET", job="ExampleJobName"}' /path/to/wal/
    ```
 
-[clustering]: ../../../configure/clustering
+[clustering]: ../../../../configure/clustering
 [mimir-ooo-err]: https://grafana.com/docs/mimir/latest/manage/mimir-runbooks/#err-mimir-sample-out-of-order
-[run-cmd]: ../../cli/run/
+[run-cmd]: ../../../cli/run/
 [promtool]: https://prometheus.io/docs/prometheus/latest/command-line/promtool/#promtool-tsdb
 
 ## Technical details
@@ -531,6 +575,9 @@ Refer to the linked documentation for more details.
 
 <!-- END GENERATED COMPATIBLE COMPONENTS -->
 
+[azuread]: #azuread
+[sigv4]: #sigv4
+[endpoint]: #endpoint
 [snappy]: https://en.wikipedia.org/wiki/Snappy_(compression)
 [WAL block]: #wal
 [Stop]: ../../../../set-up/run/

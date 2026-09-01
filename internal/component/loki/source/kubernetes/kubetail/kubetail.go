@@ -3,31 +3,33 @@ package kubetail
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
-	"github.com/go-kit/log"
-	"github.com/grafana/alloy/internal/component/common/loki"
-	"github.com/grafana/alloy/internal/component/common/loki/positions"
-	"github.com/grafana/alloy/internal/runner"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/grafana/alloy/internal/component/common/loki"
+	"github.com/grafana/alloy/internal/component/loki/source/internal/positions"
+	"github.com/grafana/alloy/internal/runner"
 )
 
 // Options passed to all tailers.
 type Options struct {
 	// Client to use to request logs from Kubernetes.
-	Client *kubernetes.Clientset
+	Client kubernetes.Interface
 
 	// Handler to send discovered logs to.
 	Handler loki.EntryHandler
 
 	// Positions interface so tailers can save/restore offsets in log files.
 	Positions positions.Positions
+
+	TailFromEnd bool
 }
 
 // A Manager manages a set of running Tailers.
 type Manager struct {
-	log log.Logger
+	log *slog.Logger
 
 	mut   sync.Mutex
 	opts  *Options
@@ -41,7 +43,7 @@ type Manager struct {
 //
 // If NewManager is called with a nil set of options, no targets will be
 // scheduled for running until UpdateOptions is called.
-func NewManager(l log.Logger, opts *Options) *Manager {
+func NewManager(l *slog.Logger, opts *Options) *Manager {
 	return &Manager{
 		log:  l,
 		opts: opts,
@@ -94,7 +96,7 @@ func (m *Manager) SyncTargets(ctx context.Context, targets []*Target) error {
 		// to ensure that the old tailers have shut down, otherwise the tailer
 		// might write its position again during shutdown after we removed it.
 		if _, found := newEntries[ent]; !found {
-			level.Info(m.log).Log("msg", "removing entry from positions file", "path", ent.Path, "labels", ent.Labels)
+			m.log.Info("removing entry from positions file", "path", ent.Path, "labels", ent.Labels)
 			m.opts.Positions.Remove(ent.Path, ent.Labels)
 		}
 	}

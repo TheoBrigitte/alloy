@@ -5,6 +5,8 @@ aliases:
 description: Learn about prometheus.exporter.snmp
 labels:
   stage: general-availability
+  products:
+    - oss
 title: prometheus.exporter.snmp
 ---
 
@@ -42,13 +44,13 @@ prometheus.exporter.snmp "<LABEL>" {
 
 You can use the following arguments with `prometheus.exporter.snmp`:
 
-| Name                    | Type                 | Description                                                                                                                  | Default   | Required |
-| ----------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------- | --------- | -------- |
-| `concurrency`           | `int`                | SNMP exporter concurrency.                                                                                                   | `1`       | no       |
-| `config_file`           | `string`             | SNMP configuration file defining custom modules.                                                                             |           | no       |
-| `config_merge_strategy` | `string`             | A strategy defining how `config` or `config_file` contents merge with the embedded SNMP config. Can be `replace` or `merge`. | `replace` | no       |
-| `config`                | `string` or `secret` | SNMP configuration as inline string.                                                                                         |           | no       |
-| `targets`               | `list(map(string))`  | SNMP targets.                                                                                                                |           | no       |
+| Name                    | Type                 | Description                                                                                                                  | Default     | Required |
+| ----------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------- | -------- |
+| `concurrency`           | `int`                | SNMP exporter concurrency.                                                                                                   | `1`         | no       |
+| `config_file`           | `string`             | SNMP configuration file defining custom modules.                                                                             |             | no       |
+| `config_merge_strategy` | `string`             | A strategy defining how `config` or `config_file` contents merge with the embedded SNMP config. Can be `replace` or `merge`. | `"replace"` | no       |
+| `config`                | `string` or `secret` | SNMP configuration as inline string.                                                                                         |             | no       |
+| `targets`               | `list(map(string))`  | SNMP targets.                                                                                                                |             | no       |
 
 The `config_file` argument points to a YAML file defining which snmp_exporter modules to use.
 Refer to [snmp_exporter](https://github.com/prometheus/snmp_exporter/tree/{{< param "SNMP_VERSION" >}}?tab=readme-ov-file#configuration) for details on how to generate a configuration file.
@@ -64,7 +66,7 @@ For example,
 Set `config_merge_strategy` to `merge` to add additional configuration to the embedded SNMP configuration.
 For example, if you need to add a few custom `auth` settings without regenerating the whole configuration.
 
-The `targets` argument is an alternative to the [target][] block. This is useful when SNMP targets are supplied by another component.
+The `targets` argument is an alternative to the [target](#target) block. This is useful when SNMP targets are supplied by another component.
 The following labels can be set to a target:
 
 * `name`: The name of the target (required).
@@ -79,6 +81,8 @@ Any other labels defined are added to the scraped metrics.
 
 You can use the following blocks with `prometheus.exporter.snmp`:
 
+{{< docs/alloy-config >}}
+
 | Name                       | Description                                                 | Required |
 | -------------------------- | ----------------------------------------------------------- | -------- |
 | [`target`][target]         | Configures an SNMP target.                                  | no       |
@@ -86,6 +90,8 @@ You can use the following blocks with `prometheus.exporter.snmp`:
 
 [target]: #target
 [walk_param]: #walk_param
+
+{{< /docs/alloy-config >}}
 
 ### `target`
 

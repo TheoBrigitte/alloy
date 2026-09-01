@@ -19,7 +19,6 @@ var DefaultArguments = Config{
 		CloudPlatform:                    rac.ResourceAttributeConfig{Enabled: true},
 		CloudProvider:                    rac.ResourceAttributeConfig{Enabled: true},
 		CloudRegion:                      rac.ResourceAttributeConfig{Enabled: true},
-		FaasID:                           rac.ResourceAttributeConfig{Enabled: true},
 		FaasInstance:                     rac.ResourceAttributeConfig{Enabled: true},
 		FaasName:                         rac.ResourceAttributeConfig{Enabled: true},
 		FaasVersion:                      rac.ResourceAttributeConfig{Enabled: true},
@@ -44,19 +43,20 @@ func (args *Config) SetToDefault() {
 	*args = DefaultArguments
 }
 
-func (args Config) Convert() map[string]interface{} {
-	return map[string]interface{}{
+func (args Config) Convert() map[string]any {
+	return map[string]any{
 		"resource_attributes": args.ResourceAttributes.Convert(),
 	}
 }
 
 // ResourceAttributesConfig provides config for gcp resource attributes.
 type ResourceAttributesConfig struct {
-	CloudAccountID                   rac.ResourceAttributeConfig `alloy:"cloud.account.id,block,optional"`
-	CloudAvailabilityZone            rac.ResourceAttributeConfig `alloy:"cloud.availability_zone,block,optional"`
-	CloudPlatform                    rac.ResourceAttributeConfig `alloy:"cloud.platform,block,optional"`
-	CloudProvider                    rac.ResourceAttributeConfig `alloy:"cloud.provider,block,optional"`
-	CloudRegion                      rac.ResourceAttributeConfig `alloy:"cloud.region,block,optional"`
+	CloudAccountID        rac.ResourceAttributeConfig `alloy:"cloud.account.id,block,optional"`
+	CloudAvailabilityZone rac.ResourceAttributeConfig `alloy:"cloud.availability_zone,block,optional"`
+	CloudPlatform         rac.ResourceAttributeConfig `alloy:"cloud.platform,block,optional"`
+	CloudProvider         rac.ResourceAttributeConfig `alloy:"cloud.provider,block,optional"`
+	CloudRegion           rac.ResourceAttributeConfig `alloy:"cloud.region,block,optional"`
+	// Deprecated: FaasID was removed upstream and have no effect.
 	FaasID                           rac.ResourceAttributeConfig `alloy:"faas.id,block,optional"`
 	FaasInstance                     rac.ResourceAttributeConfig `alloy:"faas.instance,block,optional"`
 	FaasName                         rac.ResourceAttributeConfig `alloy:"faas.name,block,optional"`
@@ -74,14 +74,13 @@ type ResourceAttributesConfig struct {
 	K8sClusterName                   rac.ResourceAttributeConfig `alloy:"k8s.cluster.name,block,optional"`
 }
 
-func (r ResourceAttributesConfig) Convert() map[string]interface{} {
-	return map[string]interface{}{
+func (r ResourceAttributesConfig) Convert() map[string]any {
+	return map[string]any{
 		"cloud.account.id":                      r.CloudAccountID.Convert(),
 		"cloud.availability_zone":               r.CloudAvailabilityZone.Convert(),
 		"cloud.platform":                        r.CloudPlatform.Convert(),
 		"cloud.provider":                        r.CloudProvider.Convert(),
 		"cloud.region":                          r.CloudRegion.Convert(),
-		"faas.id":                               r.FaasID.Convert(),
 		"faas.instance":                         r.FaasInstance.Convert(),
 		"faas.name":                             r.FaasName.Convert(),
 		"faas.version":                          r.FaasVersion.Convert(),

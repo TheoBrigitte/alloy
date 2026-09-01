@@ -32,7 +32,7 @@ func TestComponent(t *testing.T) {
 	arg := NewDefaultArguments()
 	arg.JobName = "test"
 	c, err := New(component.Options{
-		Logger:         util.TestAlloyLogger(t),
+		Logger:         util.TestAlloyLogger(t).Slog(),
 		Registerer:     prometheus.NewRegistry(),
 		OnStateChange:  func(e component.Exports) {},
 		GetServiceData: getServiceData,
@@ -68,7 +68,7 @@ func TestComponent(t *testing.T) {
 	}, 5*time.Second, 100*time.Millisecond)
 }
 
-func getServiceData(name string) (interface{}, error) {
+func getServiceData(name string) (any, error) {
 	switch name {
 	case cluster.ServiceName:
 		return cluster.Mock(), nil
@@ -240,7 +240,7 @@ func TestUpdateWhileScraping(t *testing.T) {
 	args.ScrapeInterval = 1 * time.Second
 
 	c, err := New(component.Options{
-		Logger:         util.TestAlloyLogger(t),
+		Logger:         util.TestAlloyLogger(t).Slog(),
 		Registerer:     prometheus.NewRegistry(),
 		OnStateChange:  func(e component.Exports) {},
 		GetServiceData: getServiceData,

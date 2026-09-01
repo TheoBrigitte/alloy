@@ -5,15 +5,14 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
-	"github.com/go-kit/log"
 	otelcomponent "go.opentelemetry.io/collector/component"
 	"go.uber.org/multierr"
 
 	"github.com/grafana/alloy/internal/component"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 )
 
 // Scheduler implements manages a set of OpenTelemetry Collector components.
@@ -29,7 +28,7 @@ import (
 // OpenTelemetry Collector component; this means that otlpreceiver and
 // jaegerreceiver should not share the same Scheduler.
 type Scheduler struct {
-	log log.Logger
+	log *slog.Logger
 
 	healthMut sync.RWMutex
 	health    component.Health
@@ -47,7 +46,7 @@ type Scheduler struct {
 
 // New creates a new unstarted Scheduler. Call Run to start it, and call
 // Schedule to schedule components to run.
-func New(l log.Logger) *Scheduler {
+func New(l *slog.Logger) *Scheduler {
 	return &Scheduler{
 		log:      l,
 		onPause:  func() {},
@@ -61,7 +60,7 @@ func New(l log.Logger) *Scheduler {
 // * onResume() is called after the scheduler starts the components.
 // The callbacks are used by the Schedule() and Run() functions.
 // The scheduler is assumed to start paused; Schedule() won't call onPause() if Run() was never ran.
-func NewWithPauseCallbacks(l log.Logger, onPause func(), onResume func()) *Scheduler {
+func NewWithPauseCallbacks(l *slog.Logger, onPause func(), onResume func()) *Scheduler {
 	return &Scheduler{
 		log:      l,
 		onPause:  onPause,
@@ -105,15 +104,19 @@ func (cs *Scheduler) Schedule(ctx context.Context, updateConsumers func(), h ote
 	cs.onPause()
 
 	// 2. Stop the old components
-	cs.stopComponents(ctx, cs.schedComponents...)
+	stopComponents(ctx, cs.log, cs.schedComponents...)
 
 	// 3. Change the consumers
 	// This can only be done after stopping the previous components and before starting the new ones.
 	updateConsumers()
 
 	// 4. Start the new components
-	level.Debug(cs.log).Log("msg", "scheduling otelcol components", "count", len(cs.schedComponents))
-	cs.schedComponents = cs.startComponents(ctx, h, cc...)
+	cs.log.Debug("scheduling otelcol components", "count", len(cc))
+	var err error
+	cs.schedComponents, err = startComponents(ctx, cs.log, cs, h, cc...)
+	if err != nil {
+		cs.log.Error("failed to start some scheduled components", "err", err)
+	}
 	cs.host = h
 	//TODO: What if the trace component failed but the metrics one didn't? Should we resume all consumers?
 
@@ -128,16 +131,20 @@ func (cs *Scheduler) Run(ctx context.Context) error {
 	cs.running = true
 
 	cs.onPause()
-	cs.startComponents(ctx, cs.host, cs.schedComponents...)
+	started, err := startComponents(ctx, cs.log, cs, cs.host, cs.schedComponents...)
 	cs.onResume()
 
 	cs.schedMut.Unlock()
+
+	if len(started) == 0 && err != nil {
+		return fmt.Errorf("no components started successfully: %w", err)
+	}
 
 	// Make sure we terminate all of our running components on shutdown.
 	defer func() {
 		cs.schedMut.Lock()
 		defer cs.schedMut.Unlock()
-		cs.stopComponents(context.Background(), cs.schedComponents...)
+		stopComponents(context.Background(), cs.log, cs.schedComponents...)
 		// this Resume call should not be needed but is added for robustness to ensure that
 		// it does not ever exit in "paused" state.
 		cs.onResume()
@@ -145,45 +152,6 @@ func (cs *Scheduler) Run(ctx context.Context) error {
 
 	<-ctx.Done()
 	return nil
-}
-
-func (cs *Scheduler) stopComponents(ctx context.Context, cc ...otelcomponent.Component) {
-	for _, c := range cc {
-		if err := c.Shutdown(ctx); err != nil {
-			level.Error(cs.log).Log("msg", "failed to stop scheduled component; future updates may fail", "err", err)
-		}
-	}
-}
-
-// startComponent schedules the provided components from cc. It then returns
-// the list of components which started successfully.
-func (cs *Scheduler) startComponents(ctx context.Context, h otelcomponent.Host, cc ...otelcomponent.Component) (started []otelcomponent.Component) {
-	var errs error
-
-	for _, c := range cc {
-		if err := c.Start(ctx, h); err != nil {
-			level.Error(cs.log).Log("msg", "failed to start scheduled component", "err", err)
-			errs = multierr.Append(errs, err)
-		} else {
-			started = append(started, c)
-		}
-	}
-
-	if errs != nil {
-		cs.setHealth(component.Health{
-			Health:     component.HealthTypeUnhealthy,
-			Message:    fmt.Sprintf("failed to create components: %s", errs),
-			UpdateTime: time.Now(),
-		})
-	} else {
-		cs.setHealth(component.Health{
-			Health:     component.HealthTypeHealthy,
-			Message:    "started scheduled components",
-			UpdateTime: time.Now(),
-		})
-	}
-
-	return started
 }
 
 // CurrentHealth implements component.HealthComponent. The component is
@@ -199,4 +167,46 @@ func (cs *Scheduler) setHealth(h component.Health) {
 	cs.healthMut.Lock()
 	defer cs.healthMut.Unlock()
 	cs.health = h
+}
+
+// stopComponents stops all provided components from cc.
+func stopComponents(ctx context.Context, logger *slog.Logger, cc ...otelcomponent.Component) {
+	for _, c := range cc {
+		if err := c.Shutdown(ctx); err != nil {
+			logger.Error("failed to stop scheduled component; future updates may fail", "err", err)
+		}
+	}
+}
+
+type healthScheduler interface {
+	setHealth(h component.Health)
+}
+
+// startComponent schedules the provided components from cc. It then returns
+// the list of components which started successfully.
+func startComponents(ctx context.Context, logger *slog.Logger, s healthScheduler, h otelcomponent.Host, cc ...otelcomponent.Component) (started []otelcomponent.Component, errs error) {
+	for _, c := range cc {
+		if err := c.Start(ctx, h); err != nil {
+			logger.Error("failed to start scheduled component", "err", err)
+			errs = multierr.Append(errs, err)
+		} else {
+			started = append(started, c)
+		}
+	}
+
+	if errs != nil {
+		s.setHealth(component.Health{
+			Health:     component.HealthTypeUnhealthy,
+			Message:    fmt.Sprintf("failed to create components: %s", errs),
+			UpdateTime: time.Now(),
+		})
+	} else {
+		s.setHealth(component.Health{
+			Health:     component.HealthTypeHealthy,
+			Message:    "started scheduled components",
+			UpdateTime: time.Now(),
+		})
+	}
+
+	return started, errs
 }

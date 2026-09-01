@@ -31,11 +31,16 @@ func init() {
 
 // Arguments configures the otelcol.processor.tail_sampling component.
 type Arguments struct {
-	PolicyCfgs              []PolicyConfig      `alloy:"policy,block"`
-	DecisionWait            time.Duration       `alloy:"decision_wait,attr,optional"`
-	NumTraces               uint64              `alloy:"num_traces,attr,optional"`
-	ExpectedNewTracesPerSec uint64              `alloy:"expected_new_traces_per_sec,attr,optional"`
-	DecisionCache           DecisionCacheConfig `alloy:"decision_cache,attr,optional"`
+	PolicyCfgs                    []PolicyConfig      `alloy:"policy,block"`
+	DecisionWait                  time.Duration       `alloy:"decision_wait,attr,optional"`
+	DecisionWaitAfterRootReceived time.Duration       `alloy:"decision_wait_after_root_received,attr,optional"`
+	NumTraces                     uint64              `alloy:"num_traces,attr,optional"`
+	BlockOnOverflow               bool                `alloy:"block_on_overflow,attr,optional"`
+	ExpectedNewTracesPerSec       uint64              `alloy:"expected_new_traces_per_sec,attr,optional"`
+	SampleOnFirstMatch            bool                `alloy:"sample_on_first_match,attr,optional"`
+	DropPendingTracesOnShutdown   bool                `alloy:"drop_pending_traces_on_shutdown,attr,optional"`
+	MaximumTraceSizeBytes         uint64              `alloy:"maximum_trace_size_bytes,attr,optional"`
+	DecisionCache                 DecisionCacheConfig `alloy:"decision_cache,attr,optional"`
 	// Output configures where to send processed data. Required.
 	Output *otelcol.ConsumerArguments `alloy:"output,block"`
 	// DebugMetrics configures component internal metrics. Optional.
@@ -79,13 +84,21 @@ func (args Arguments) Convert() (otelcomponent.Config, error) {
 		otelPolicyCfgs = append(otelPolicyCfgs, policyCfg.Convert())
 	}
 
-	return &tsp.Config{
-		DecisionWait:            args.DecisionWait,
-		NumTraces:               args.NumTraces,
-		ExpectedNewTracesPerSec: args.ExpectedNewTracesPerSec,
-		PolicyCfgs:              otelPolicyCfgs,
-		DecisionCache:           args.DecisionCache.Convert(),
-	}, nil
+	// Build on the factory's default config rather than a zero-value struct: the
+	// processor requires a sampling strategy, but upstream keeps that field
+	// unexported, so CreateDefaultConfig is the only way to set it.
+	cfg := tsp.NewFactory().CreateDefaultConfig().(*tsp.Config)
+	cfg.DecisionWait = args.DecisionWait
+	cfg.DecisionWaitAfterRootReceived = args.DecisionWaitAfterRootReceived
+	cfg.NumTraces = args.NumTraces
+	cfg.BlockOnOverflow = args.BlockOnOverflow
+	cfg.ExpectedNewTracesPerSec = args.ExpectedNewTracesPerSec
+	cfg.SampleOnFirstMatch = args.SampleOnFirstMatch
+	cfg.DropPendingTracesOnShutdown = args.DropPendingTracesOnShutdown
+	cfg.MaximumTraceSizeBytes = args.MaximumTraceSizeBytes
+	cfg.PolicyCfgs = otelPolicyCfgs
+	cfg.DecisionCache = args.DecisionCache.Convert()
+	return cfg, nil
 }
 
 // Extensions implements processor.Arguments.

@@ -3,27 +3,30 @@ package blackbox_exporter_v2
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path"
 
-	"github.com/go-kit/log"
 	"github.com/gorilla/mux"
-	"github.com/grafana/alloy/internal/static/integrations/blackbox_exporter"
-	"github.com/grafana/alloy/internal/static/integrations/v2"
-	"github.com/grafana/alloy/internal/static/integrations/v2/autoscrape"
-	"github.com/grafana/alloy/internal/static/integrations/v2/metricsutils"
 	blackbox_config "github.com/prometheus/blackbox_exporter/config"
 	"github.com/prometheus/blackbox_exporter/prober"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/discovery"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
+	"github.com/prometheus/prometheus/model/labels"
+
+	"github.com/grafana/alloy/internal/slogadapter"
+	"github.com/grafana/alloy/internal/static/integrations/blackbox_exporter"
+	"github.com/grafana/alloy/internal/static/integrations/v2"
+	"github.com/grafana/alloy/internal/static/integrations/v2/autoscrape"
+	"github.com/grafana/alloy/internal/static/integrations/v2/metricsutils"
 )
 
 type blackboxHandler struct {
 	cfg     *Config
 	modules *blackbox_config.Config
-	log     log.Logger
+	log     *slog.Logger
 }
 
 func (bbh *blackboxHandler) Targets(ep integrations.Endpoint) []*targetgroup.Group {
@@ -44,9 +47,9 @@ func (bbh *blackboxHandler) Targets(ep integrations.Endpoint) []*targetgroup.Gro
 		Source: fmt.Sprintf("%s/%s", bbh.cfg.Name(), bbh.cfg.Name()),
 	}
 
-	for _, lbl := range bbh.cfg.Common.ExtraLabels {
+	bbh.cfg.Common.ExtraLabels.Range(func(lbl labels.Label) {
 		group.Labels[model.LabelName(lbl.Name)] = model.LabelValue(lbl.Value)
-	}
+	})
 
 	for _, t := range bbh.cfg.BlackboxTargets {
 		labelSet := model.LabelSet{
@@ -109,7 +112,7 @@ func (bbh *blackboxHandler) createHandler(targets []blackbox_exporter.BlackboxTa
 			params.Set("module", t.Module)
 		}
 
-		prober.Handler(w, r, bbh.modules, bbh.log, &prober.ResultHistory{}, bbh.cfg.ProbeTimeoutOffset, params, nil)
+		prober.Handler(w, r, bbh.modules, slogadapter.GoKit(bbh.log.Handler()), &prober.ResultHistory{}, bbh.cfg.ProbeTimeoutOffset, params, nil)
 	}
 }
 

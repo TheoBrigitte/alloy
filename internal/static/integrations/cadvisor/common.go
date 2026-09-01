@@ -1,9 +1,9 @@
 package cadvisor
 
 import (
+	"log/slog"
 	"time"
 
-	"github.com/go-kit/log"
 	"github.com/grafana/alloy/internal/static/integrations"
 	integrations_v2 "github.com/grafana/alloy/internal/static/integrations/v2"
 	"github.com/grafana/alloy/internal/static/integrations/v2/metricsutils"
@@ -97,11 +97,11 @@ type Config struct {
 	DisableRootCgroupStats bool `yaml:"disable_root_cgroup_stats,omitempty"`
 
 	// Hold on to the logger passed to config.NewIntegration, to be passed to klog, as yet another unsafe global that needs to be set.
-	logger log.Logger //nolint:unused,structcheck // logger is only used on linux
+	logger *slog.Logger //nolint:unused,structcheck // logger is only used on linux
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler for Config
-func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (c *Config) UnmarshalYAML(unmarshal func(any) error) error {
 	*c = DefaultConfig
 
 	type plain Config
@@ -130,9 +130,8 @@ func (c *Config) Name() string {
 	return name
 }
 
-// InstanceKey returns the agentKey
-func (c *Config) InstanceKey(agentKey string) (string, error) {
-	return agentKey, nil
+func (c *Config) InstanceKey(defaultKey string) (string, error) {
+	return defaultKey, nil
 }
 
 func init() {

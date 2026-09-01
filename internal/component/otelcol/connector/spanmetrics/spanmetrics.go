@@ -3,6 +3,7 @@ package spanmetrics
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/grafana/alloy/internal/component"
@@ -40,6 +41,7 @@ type Arguments struct {
 	// The dimensions will be fetched from the span's attributes. Examples of some conventionally used attributes:
 	// https://github.com/open-telemetry/opentelemetry-collector/blob/main/model/semconv/opentelemetry.go.
 	Dimensions        []Dimension `alloy:"dimension,block,optional"`
+	CallsDimensions   []Dimension `alloy:"calls_dimension,block,optional"`
 	ExcludeDimensions []string    `alloy:"exclude_dimensions,attr,optional"`
 
 	// DimensionsCacheSize defines the size of cache for storing Dimensions, which helps to avoid cache memory growing
@@ -59,6 +61,8 @@ type Arguments struct {
 	// See https://opentelemetry.io/docs/specs/semconv/resource/ for possible attributes.
 	ResourceMetricsKeyAttributes []string `alloy:"resource_metrics_key_attributes,attr,optional"`
 
+	AggregationCardinalityLimit int `alloy:"aggregation_cardinality_limit,attr,optional"`
+
 	AggregationTemporality string `alloy:"aggregation_temporality,attr,optional"`
 
 	Histogram HistogramConfig `alloy:"histogram,block"`
@@ -69,6 +73,10 @@ type Arguments struct {
 	// MetricsExpiration is the time period after which metrics are considered stale and are removed from the cache.
 	// Default value (0) means that the metrics will never expire.
 	MetricsExpiration time.Duration `alloy:"metrics_expiration,attr,optional"`
+
+	// SeriesExpiration is the time period after which individual metric series are considered stale and are no longer exported.
+	// Default value (0) means that series will never expire.
+	SeriesExpiration time.Duration `alloy:"series_expiration,attr,optional"`
 
 	// TimestampCacheSize controls the size of the cache used to keep track of delta metrics' TimestampUnixNano the last time it was flushed
 	TimestampCacheSize int `alloy:"metric_timestamp_cache_size,attr,optional"`
@@ -87,6 +95,14 @@ type Arguments struct {
 
 	// DebugMetrics configures component internal metrics. Optional.
 	DebugMetrics otelcolCfg.DebugMetricsArguments `alloy:"debug_metrics,block,optional"`
+
+	IncludeInstrumentationScope []string `alloy:"include_instrumentation_scope,attr,optional"`
+
+	// IncludeCollectorInstanceID adds the connector's collector.instance.id dimension, which
+	// upstream uses to satisfy the Single Writer Principle in multi-instance deployments.
+	// Its value is a random UUID per connector instance that changes on every rebuild, so a
+	// single Alloy suppresses it by default to keep the series stable.
+	IncludeCollectorInstanceID bool `alloy:"include_collector_instance_id,attr,optional"`
 }
 
 var (
@@ -102,13 +118,16 @@ const (
 
 // DefaultArguments holds default settings for Arguments.
 var DefaultArguments = Arguments{
-	DimensionsCacheSize:      1000,
 	AggregationTemporality:   AggregationTemporalityCumulative,
 	MetricsFlushInterval:     60 * time.Second,
 	MetricsExpiration:        0,
+	SeriesExpiration:         0,
 	ResourceMetricsCacheSize: 1000,
 	TimestampCacheSize:       1000,
 	Namespace:                "traces.span.metrics",
+	Exemplars: ExemplarsConfig{
+		MaxPerDataPoint: 5,
+	},
 }
 
 // SetToDefault implements syntax.Defaulter.
@@ -119,24 +138,17 @@ func (args *Arguments) SetToDefault() {
 
 // Validate implements syntax.Validator.
 func (args *Arguments) Validate() error {
-	if args.DimensionsCacheSize <= 0 {
-		return fmt.Errorf(
-			"invalid cache size: %v, the maximum number of the items in the cache should be positive",
-			args.DimensionsCacheSize)
-	}
-
+	// Stricter than upstream, which allows 0 (Convert always sets a non-nil
+	// TimestampCacheSize, so upstream's own check can't catch this case).
 	if args.MetricsFlushInterval <= 0 {
 		return fmt.Errorf("metrics_flush_interval must be greater than 0")
 	}
 
-	switch args.AggregationTemporality {
-	case AggregationTemporalityCumulative, AggregationTemporalityDelta:
-		// Valid
-	default:
-		return fmt.Errorf("invalid aggregation_temporality: %v", args.AggregationTemporality)
+	cfg, err := args.Convert()
+	if err != nil {
+		return err
 	}
-
-	return nil
+	return cfg.(*spanmetricsconnector.Config).Validate()
 }
 
 func convertAggregationTemporality(temporality string) (string, error) {
@@ -161,11 +173,20 @@ func FromOTelAggregationTemporality(temporality string) string {
 	}
 }
 
+// collectorInstanceIDDimension is the dimension the spanmetrics connector fills with a
+// random UUID to satisfy the Single Writer Principle across multi-instance deployments.
+const collectorInstanceIDDimension = "collector.instance.id"
+
 // Convert implements connector.Arguments.
 func (args Arguments) Convert() (otelcomponent.Config, error) {
 	dimensions := make([]spanmetricsconnector.Dimension, 0, len(args.Dimensions))
 	for _, d := range args.Dimensions {
 		dimensions = append(dimensions, d.Convert())
+	}
+
+	callsDimensions := make([]spanmetricsconnector.Dimension, 0, len(args.CallsDimensions))
+	for _, d := range args.CallsDimensions {
+		callsDimensions = append(callsDimensions, d.Convert())
 	}
 
 	histogram, err := args.Histogram.Convert()
@@ -179,23 +200,33 @@ func (args Arguments) Convert() (otelcomponent.Config, error) {
 	}
 
 	excludeDimensions := append([]string(nil), args.ExcludeDimensions...)
+	// Suppress collector.instance.id unless the user opts in. The connector sets it to a
+	// random UUID per instance that changes on every rebuild, so for a single Alloy it just
+	// fragments the series. It's only useful across multiple instances (Single Writer).
+	if !args.IncludeCollectorInstanceID && !slices.Contains(excludeDimensions, collectorInstanceIDDimension) {
+		excludeDimensions = append(excludeDimensions, collectorInstanceIDDimension)
+	}
 
 	timestampCacheSize := args.TimestampCacheSize
 
 	return &spanmetricsconnector.Config{
 		Dimensions:                   dimensions,
+		CallsDimensions:              callsDimensions,
 		ExcludeDimensions:            excludeDimensions,
 		DimensionsCacheSize:          args.DimensionsCacheSize,
 		ResourceMetricsCacheSize:     args.ResourceMetricsCacheSize,
 		TimestampCacheSize:           &timestampCacheSize,
 		ResourceMetricsKeyAttributes: args.ResourceMetricsKeyAttributes,
+		AggregationCardinalityLimit:  args.AggregationCardinalityLimit,
 		AggregationTemporality:       aggregationTemporality,
 		Histogram:                    *histogram,
 		MetricsFlushInterval:         args.MetricsFlushInterval,
 		MetricsExpiration:            args.MetricsExpiration,
+		SeriesExpiration:             args.SeriesExpiration,
 		Namespace:                    args.Namespace,
 		Exemplars:                    *args.Exemplars.Convert(),
 		Events:                       args.Events.Convert(),
+		IncludeInstrumentationScope:  args.IncludeInstrumentationScope,
 	}, nil
 }
 

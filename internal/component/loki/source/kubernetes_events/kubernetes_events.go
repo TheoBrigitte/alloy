@@ -5,22 +5,23 @@ package kubernetes_events
 import (
 	"context"
 	"fmt"
+	"iter"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sync"
 	"time"
 
-	"github.com/go-kit/log"
+	"github.com/grafana/ckit/shard"
+	"k8s.io/client-go/rest"
+
 	"github.com/grafana/alloy/internal/component"
 	"github.com/grafana/alloy/internal/component/common/kubernetes"
 	"github.com/grafana/alloy/internal/component/common/loki"
-	"github.com/grafana/alloy/internal/component/common/loki/positions"
+	"github.com/grafana/alloy/internal/component/loki/source"
+	"github.com/grafana/alloy/internal/component/loki/source/internal/positions"
 	"github.com/grafana/alloy/internal/featuregate"
-	"github.com/grafana/alloy/internal/runner"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
-	"github.com/oklog/run"
-	"k8s.io/client-go/rest"
+	"github.com/grafana/alloy/internal/service/cluster"
 )
 
 // Generous timeout period for configuring informers
@@ -49,6 +50,8 @@ type Arguments struct {
 
 	// Client settings to connect to Kubernetes.
 	Client kubernetes.ClientArguments `alloy:"client,block,optional"`
+
+	Clustering cluster.ComponentBlock `alloy:"clustering,block,optional"`
 }
 
 // DefaultArguments holds default settings for loki.source.kubernetes_events.
@@ -79,27 +82,23 @@ func (args *Arguments) Validate() error {
 // watches events from Kubernetes and forwards received events to other Loki
 // components.
 type Component struct {
-	log        log.Logger
-	opts       component.Options
-	positions  positions.Positions
-	handler    loki.LogsReceiver
-	runner     *runner.Runner[eventControllerTask]
-	newTasksCh chan struct{}
+	opts      component.Options
+	positions positions.Positions
+	handler   loki.LogsReceiver
+	cluster   cluster.Cluster
 
-	mut        sync.Mutex
+	mut        sync.RWMutex
 	args       Arguments
 	restConfig *rest.Config
+	scheduler  *source.Scheduler[string]
 
-	tasksMut sync.RWMutex
-	tasks    []eventControllerTask
-
-	receiversMut sync.RWMutex
-	receivers    []loki.LogsReceiver
+	fanout *loki.Fanout
 }
 
 var (
 	_ component.Component      = (*Component)(nil)
 	_ component.DebugComponent = (*Component)(nil)
+	_ cluster.Component        = (*Component)(nil)
 )
 
 // New creates a new loki.source.kubernetes_events component.
@@ -116,15 +115,18 @@ func New(o component.Options, args Arguments) (*Component, error) {
 		return nil, err
 	}
 
+	data, err := o.GetServiceData(cluster.ServiceName)
+	if err != nil {
+		return nil, err
+	}
+
 	c := &Component{
-		log:       o.Logger,
 		opts:      o,
 		positions: positionsFile,
 		handler:   loki.NewLogsReceiver(),
-		runner: runner.New(func(t eventControllerTask) runner.Worker {
-			return newEventController(t)
-		}),
-		newTasksCh: make(chan struct{}, 1),
+		cluster:   data.(cluster.Cluster),
+		scheduler: source.NewScheduler[string](),
+		fanout:    loki.NewFanout(args.ForwardTo),
 	}
 	if err := c.Update(args); err != nil {
 		return nil, err
@@ -134,55 +136,17 @@ func New(o component.Options, args Arguments) (*Component, error) {
 
 // Run implements component.Component.
 func (c *Component) Run(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	defer func() {
+		defer c.positions.Stop()
+		loki.Drain(c.handler, c.fanout, loki.DefaultDrainTimeout, func() {
+			c.mut.Lock()
+			defer c.mut.Unlock()
+			c.scheduler.Stop()
+		})
+	}()
 
-	defer c.positions.Stop()
-	defer c.runner.Stop()
-
-	var rg run.Group
-
-	// Runner to apply tasks.
-	rg.Add(func() error {
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-c.newTasksCh:
-				c.tasksMut.RLock()
-				tasks := c.tasks
-				c.tasksMut.RUnlock()
-
-				if err := c.runner.ApplyTasks(ctx, tasks); err != nil {
-					level.Error(c.log).Log("msg", "failed to apply event watchers", "err", err)
-				}
-			}
-		}
-	}, func(_ error) {
-		cancel()
-	})
-
-	// Runner to forward received logs.
-	rg.Add(func() error {
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case entry := <-c.handler.Chan():
-				c.receiversMut.RLock()
-				receivers := c.receivers
-				c.receiversMut.RUnlock()
-
-				for _, receiver := range receivers {
-					receiver.Chan() <- entry
-				}
-			}
-		}
-	}, func(_ error) {
-		cancel()
-	})
-
-	return rg.Run()
+	loki.Consume(ctx, c.handler, c.fanout)
+	return nil
 }
 
 // Update implements component.Component.
@@ -192,68 +156,118 @@ func (c *Component) Update(args component.Arguments) error {
 
 	newArgs := args.(Arguments)
 
-	c.receiversMut.Lock()
-	c.receivers = newArgs.ForwardTo
-	c.receiversMut.Unlock()
-
-	restConfig := c.restConfig
+	c.fanout.UpdateChildren(newArgs.ForwardTo)
 
 	// Create a new restConfig if we don't have one or if our arguments changed.
-	if restConfig == nil || !reflect.DeepEqual(c.args.Client, newArgs.Client) {
+	if c.restConfig == nil || !reflect.DeepEqual(c.args.Client, newArgs.Client) {
 		var err error
-		restConfig, err = newArgs.Client.BuildRESTConfig(c.log)
+		c.restConfig, err = newArgs.Client.BuildRESTConfig(c.opts.Logger)
 		if err != nil {
 			return fmt.Errorf("building Kubernetes client config: %w", err)
 		}
-	}
 
-	// Create a task for each defined namespace.
-	var newTasks []eventControllerTask
-	for _, namespace := range getNamespaces(newArgs) {
-		newTasks = append(newTasks, eventControllerTask{
-			Log:          c.log,
-			Config:       restConfig,
-			JobName:      newArgs.JobName,
-			InstanceName: c.opts.ID,
-			Namespace:    namespace,
-			Receiver:     c.handler,
-			Positions:    c.positions,
-			LogFormat:    newArgs.LogFormat,
-		})
-	}
-
-	c.tasksMut.Lock()
-	c.tasks = newTasks
-	c.tasksMut.Unlock()
-
-	select {
-	case c.newTasksCh <- struct{}{}:
-	default:
-		// no-op: task reload already queued.
+		// When restConfig changes we need to restart all scheduled sources.
+		c.scheduler.Reset()
 	}
 
 	c.args = newArgs
+	c.reconcile()
 	return nil
 }
 
-// getNamespaces gets a list of namespaces to watch from the arguments. If the
-// list of namespaces is empty, returns a slice to watch all namespaces.
-func getNamespaces(args Arguments) []string {
-	if len(args.Namespaces) == 0 {
-		return []string{""} // Empty string means to watch all namespaces
+// reconcile synchronizes the running event controllers with the desired set
+// of namespaces, filtered by clustering ownership.
+func (c *Component) reconcile() {
+	source.Reconcile(
+		c.opts.Logger,
+		c.scheduler,
+		c.localNamespaces(),
+		func(namespace string) string { return namespace },
+		func(_ string, namespace string) (source.Source[string], error) {
+			return newEventController(eventControllerOptions{
+				Log:          c.opts.Logger,
+				Config:       c.restConfig,
+				Namespace:    namespace,
+				JobName:      c.args.JobName,
+				InstanceName: c.opts.ID,
+				Receiver:     c.handler,
+				Positions:    c.positions,
+				LogFormat:    c.args.LogFormat,
+			}), nil
+		},
+	)
+}
+
+// NotifyClusterChange implements cluster.Component.
+func (c *Component) NotifyClusterChange() {
+	c.mut.Lock()
+	defer c.mut.Unlock()
+
+	if !c.args.Clustering.Enabled {
+		return
 	}
-	return args.Namespaces
+	c.reconcile()
+}
+
+// localNamespaces returns an iterator of namespaces that this node should
+// watch, filtered by cluster ownership when clustering is enabled.
+func (c *Component) localNamespaces() iter.Seq[string] {
+	return func(yield func(string) bool) {
+		if c.args.Clustering.Enabled && !c.cluster.Ready() {
+			// When clustering is enabled but the cluster isn't ready yet,
+			// don't watch any namespaces. NotifyClusterChange will be called
+			// once the cluster is ready, triggering a reconcile.
+			return
+		}
+
+		for ns := range getNamespaces(c.args) {
+			if c.args.Clustering.Enabled {
+				// Use the namespace name as the hash key. For the "all namespaces"
+				// case (empty string), this results in a single key, so only one
+				// node in the cluster will watch all events.
+				peers, err := c.cluster.Lookup(shard.StringKey(ns), 1, shard.OpReadWrite)
+				if err == nil && len(peers) > 0 && !peers[0].Self {
+					continue // This namespace belongs to another node.
+				}
+			}
+			if !yield(ns) {
+				return
+			}
+		}
+	}
+}
+
+// getNamespaces returns an iterator of namespaces to watch from the arguments. If the
+// list of namespaces is empty, returns an iterator to watch all namespaces.
+func getNamespaces(args Arguments) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		if len(args.Namespaces) == 0 {
+			// Empty string means to watch all namespaces
+			yield("")
+			return
+		}
+
+		for _, namespace := range args.Namespaces {
+			if !yield(namespace) {
+				return
+			}
+		}
+	}
 }
 
 // DebugInfo implements [component.DebugComponent].
-func (c *Component) DebugInfo() interface{} {
+func (c *Component) DebugInfo() any {
+	c.mut.RLock()
+	defer c.mut.RUnlock()
+
 	type Info struct {
 		Controllers []controllerInfo `alloy:"event_controller,block,optional"`
 	}
 
 	var info Info
-	for _, worker := range c.runner.Workers() {
-		info.Controllers = append(info.Controllers, worker.(*eventController).DebugInfo())
+	for s := range c.scheduler.Sources() {
+		info.Controllers = append(info.Controllers, s.(*eventController).DebugInfo())
 	}
+
 	return info
 }

@@ -45,10 +45,10 @@ Follow these steps to clone the scenarios repository and deploy the monitoring e
 
 1. Set up the example Kubernetes environment:
 
-   1. Navigate to the `alloy-scenarios/k8s-logs` directory:
+   1. Navigate to the `alloy-scenarios/k8s/logs` directory:
 
       ```shell
-      cd alloy-scenarios/k8s-logs
+      cd alloy-scenarios/k8s/logs
       ```
 
    1. Create a local Kubernetes cluster using kind.  
@@ -120,7 +120,7 @@ Follow these steps to clone the scenarios repository and deploy the monitoring e
    1. Get the name of the {{< param "PRODUCT_NAME" >}} Pod:
 
       ```shell
-      export POD_NAME=$(kubectl get pods --namespace meta -l "app.kubernetes.io/name=alloy-logs,app.kubernetes.io/instance=k8s" -o jsonpath="{.items[0].metadata.name}")
+      export POD_NAME=$(kubectl get pods --namespace meta -l "app.kubernetes.io/name=alloy-logs,app.kubernetes.io/instance=k8s-alloy-logs" -o jsonpath="{.items[0].metadata.name}")
       ```
 
    1. Set up port-forwarding:

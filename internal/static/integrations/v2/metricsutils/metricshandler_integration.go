@@ -6,21 +6,21 @@ import (
 	"net/http"
 	"path"
 
-	"github.com/go-kit/log"
 	"github.com/gorilla/mux"
-	"github.com/grafana/alloy/internal/static/integrations/v2"
-	"github.com/grafana/alloy/internal/static/integrations/v2/autoscrape"
-	"github.com/grafana/alloy/internal/static/integrations/v2/common"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/discovery"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
+	"github.com/prometheus/prometheus/model/labels"
+
+	"github.com/grafana/alloy/internal/static/integrations/v2"
+	"github.com/grafana/alloy/internal/static/integrations/v2/autoscrape"
+	"github.com/grafana/alloy/internal/static/integrations/v2/common"
 )
 
 // NewMetricsHandlerIntegration returns a integrations.MetricsIntegration which
 // will expose a /metrics endpoint for h.
 func NewMetricsHandlerIntegration(
-	_ log.Logger,
 	c integrations.Config,
 	mc common.MetricsConfig,
 	globals integrations.Globals,
@@ -106,9 +106,9 @@ func (i *metricsHandlerIntegration) Targets(ep integrations.Endpoint) []*targetg
 		Source: fmt.Sprintf("%s/%s", i.integrationName, i.instanceID),
 	}
 
-	for _, lbl := range i.common.ExtraLabels {
+	i.common.ExtraLabels.Range(func(lbl labels.Label) {
 		group.Labels[model.LabelName(lbl.Name)] = model.LabelValue(lbl.Value)
-	}
+	})
 
 	for _, t := range i.targets {
 		group.Targets = append(group.Targets, model.LabelSet{

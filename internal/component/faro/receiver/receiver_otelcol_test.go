@@ -1,5 +1,3 @@
-//go:build !race
-
 package receiver
 
 import (
@@ -10,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/phayes/freeport"
+	"github.com/stretchr/testify/require"
+
 	"github.com/grafana/alloy/internal/component/otelcol"
 	"github.com/grafana/alloy/internal/component/otelcol/auth"
 	"github.com/grafana/alloy/internal/component/otelcol/auth/headers"
@@ -17,8 +18,7 @@ import (
 	otlphttp "github.com/grafana/alloy/internal/component/otelcol/exporter/otlphttp"
 	"github.com/grafana/alloy/internal/runtime/componenttest"
 	"github.com/grafana/alloy/internal/util"
-	"github.com/phayes/freeport"
-	"github.com/stretchr/testify/require"
+	"github.com/grafana/alloy/syntax"
 )
 
 func TestWithOtelcolConsumer(t *testing.T) {
@@ -74,21 +74,24 @@ func TestWithOtelcolConsumer(t *testing.T) {
 	otelcolAuthHeaderExport, ok := otelcolAuthHeader.Exports().(auth.Exports)
 	require.True(t, ok)
 
+	// Parse exporter config from Alloy syntax to ensure defaults are properly initialized
+	exporterCfg := fmt.Sprintf(`
+		client {
+			endpoint = "%s"
+			tls {
+				insecure             = true
+				insecure_skip_verify = true
+			}
+		}
+		encoding = "json"
+		`, finalOtelServer.URL)
+	var exporterArgs otlphttp.Arguments
+	require.NoError(t, syntax.Unmarshal([]byte(exporterCfg), &exporterArgs))
+	// Set the auth handler after unmarshalling since it's a dynamic reference
+	exporterArgs.Client.Authentication = otelcolAuthHeaderExport.Handler
+
 	go func() {
-		err := otelcolExporter.Run(ctx, otlphttp.Arguments{
-			Client: otlphttp.HTTPClientArguments(otelcol.HTTPClientArguments{
-				Endpoint:       finalOtelServer.URL,
-				Authentication: otelcolAuthHeaderExport.Handler,
-				TLS: otelcol.TLSClientArguments{
-					Insecure:           true,
-					InsecureSkipVerify: true,
-				},
-			}),
-			Encoding: otlphttp.EncodingJSON,
-			DebugMetrics: otelcolCfg.DebugMetricsArguments{
-				Level: otelcolCfg.LevelDetailed,
-			},
-		})
+		err := otelcolExporter.Run(ctx, exporterArgs)
 		require.NoError(t, err)
 	}()
 

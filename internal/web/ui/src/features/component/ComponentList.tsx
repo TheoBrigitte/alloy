@@ -1,11 +1,9 @@
-import { NavLink } from 'react-router-dom';
+import { NavLink } from 'react-router';
 
 import { HealthLabel } from '../component/HealthLabel';
-import { ComponentInfo, SortOrder } from '../component/types';
-
-import Table from './Table';
-
+import { type ComponentInfo, SortOrder } from '../component/types';
 import styles from './ComponentList.module.css';
+import Table from './Table';
 
 interface ComponentListProps {
   components: ComponentInfo[];
@@ -26,7 +24,7 @@ const ComponentList = ({ components, overrideModuleID, useRemotecfg, handleSorti
    */
   const renderTableData = () => {
     return components.map(({ health, localID: id, moduleID }) => (
-      <tr key={id} style={{ lineHeight: '2.5' }}>
+      <tr key={id}>
         <td>
           <HealthLabel health={health.state} />
         </td>

@@ -1,11 +1,9 @@
 package oracledb_exporter
 
 import (
-	"errors"
 	"testing"
 
 	config_util "github.com/prometheus/common/config"
-	go_ora "github.com/sijms/go-ora/v2"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v2"
 )
@@ -19,7 +17,8 @@ scrape_integration: true
 max_idle_conns: 0
 max_open_conns: 10
 query_timeout: 5
-custom_metrics: ""`
+default_metrics: "default.toml"
+custom_metrics: ["custom.toml"]`
 
 	var c Config
 	require.NoError(t, yaml.Unmarshal([]byte(strConfig), &c))
@@ -29,86 +28,35 @@ custom_metrics: ""`
 		MaxIdleConns:     0,
 		MaxOpenConns:     10,
 		QueryTimeout:     5,
-		CustomMetrics:    "",
+		CustomMetrics:    []string{"custom.toml"},
+		DefaultMetrics:   "default.toml",
 	}, c)
-}
-
-func TestConfigValidate(t *testing.T) {
-	cases := []struct {
-		name        string
-		getConfig   func() Config
-		expectedErr error
-	}{
-		{
-			name: "valid",
-			getConfig: func() Config {
-				c := DefaultConfig
-				c.ConnectionString = "oracle://user:password@localhost:1521/orcl.localnet"
-				return c
-			},
-		},
-		{
-			name: "go_ora built connection string",
-			getConfig: func() Config {
-				c := DefaultConfig
-				c.ConnectionString = config_util.Secret(go_ora.BuildUrl("localhost", 1521, "service", "user", "pass", nil))
-				return c
-			},
-		},
-		{
-			name: "no hostname",
-			getConfig: func() Config {
-				c := DefaultConfig
-				c.ConnectionString = config_util.Secret(go_ora.BuildUrl("", 1521, "service", "user", "pass", nil))
-				return c
-			},
-			expectedErr: errNoHostname,
-		},
-		{
-			name: "no connection string",
-			getConfig: func() Config {
-				return DefaultConfig
-			},
-			expectedErr: errNoConnectionString,
-		},
-		{
-			name: "invalid scheme - cockroachdb",
-			getConfig: func() Config {
-				c := DefaultConfig
-				c.ConnectionString = config_util.Secret("postgres://maxroach@localhost:26257/movr?password=pwd")
-				return c
-			},
-			expectedErr: errors.New("unexpected scheme of type 'postgres'. Was expecting 'oracle'"),
-		},
-		{
-			name: "invalid connection string",
-			getConfig: func() Config {
-				c := DefaultConfig
-				c.ConnectionString = config_util.Secret("localhost:1521")
-				return c
-			},
-			expectedErr: errors.New("unexpected scheme of type 'localhost'. Was expecting 'oracle'"),
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := tc.getConfig()
-			if tc.expectedErr == nil {
-				require.NoError(t, validateConnString(string(cfg.ConnectionString)))
-				return
-			}
-			require.ErrorContains(t, validateConnString(string(cfg.ConnectionString)), tc.expectedErr.Error())
-		})
-	}
 }
 
 func TestConfig_InstanceKey(t *testing.T) {
 	c := DefaultConfig
-	c.ConnectionString = config_util.Secret("oracle://user:password@localhost:1521/orcl.localnet")
+	c.ConnectionString = config_util.Secret("localhost:1521/orcl.localnet")
 
-	ik := "agent-key"
-	id, err := c.InstanceKey(ik)
+	id, err := c.InstanceKey("agent-key")
 	require.NoError(t, err)
 	require.Equal(t, "localhost:1521", id)
+}
+
+func TestConfig_InstanceKey_multipleUsesDefaultKey(t *testing.T) {
+	c := Config{
+		Databases: []DatabaseInstance{
+			{Name: "a", ConnectionString: "localhost:1521/a"},
+			{Name: "b", ConnectionString: "localhost:1521/b"},
+		},
+	}
+	id, err := c.InstanceKey("component-id")
+	require.NoError(t, err)
+	require.Equal(t, "component-id", id)
+}
+
+func TestNormalizeConnectionString_oracleURL(t *testing.T) {
+	u, user, pass := NormalizeConnectionString("oracle://u:p@host:1521/svc", "", "")
+	require.Equal(t, "host:1521/svc", u)
+	require.Equal(t, "u", user)
+	require.Equal(t, "p", pass)
 }

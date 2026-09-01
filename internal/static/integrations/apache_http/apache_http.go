@@ -2,11 +2,12 @@
 package apache_http
 
 import (
+	"log/slog"
 	"net/url"
 
 	ae "github.com/Lusitaniae/apache_exporter/collector"
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
+
+	"github.com/grafana/alloy/internal/slogadapter"
 	"github.com/grafana/alloy/internal/static/integrations"
 )
 
@@ -25,7 +26,7 @@ type Config struct {
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler for Config
-func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (c *Config) UnmarshalYAML(unmarshal func(any) error) error {
 	*c = DefaultConfig
 
 	type plain Config
@@ -38,7 +39,7 @@ func (c *Config) Name() string {
 }
 
 // InstanceKey returns the addr of the apache server.
-func (c *Config) InstanceKey(agentKey string) (string, error) {
+func (c *Config) InstanceKey(_ string) (string, error) {
 	u, err := url.Parse(c.ApacheAddr)
 	if err != nil {
 		return "", err
@@ -47,7 +48,7 @@ func (c *Config) InstanceKey(agentKey string) (string, error) {
 }
 
 // NewIntegration converts the config into an integration instance.
-func (c *Config) NewIntegration(logger log.Logger) (integrations.Integration, error) {
+func (c *Config) NewIntegration(logger *slog.Logger) (integrations.Integration, error) {
 	return New(logger, c)
 }
 
@@ -57,20 +58,20 @@ func init() {
 
 // New creates a new apache_http integration. The integration scrapes metrics
 // from an Apache HTTP server.
-func New(logger log.Logger, c *Config) (integrations.Integration, error) {
+func New(logger *slog.Logger, c *Config) (integrations.Integration, error) {
 	conf := &ae.Config{
 		ScrapeURI:    c.ApacheAddr,
 		HostOverride: c.ApacheHostOverride,
 		Insecure:     c.ApacheInsecure,
 	}
 
-	//check scrape URI
+	// check scrape URI
 	_, err := url.ParseRequestURI(conf.ScrapeURI)
 	if err != nil {
-		level.Error(logger).Log("msg", "scrape_uri is invalid", "err", err)
+		logger.Error("scrape_uri is invalid", "err", err)
 		return nil, err
 	}
-	aeExporter := ae.NewExporter(logger, conf)
+	aeExporter := ae.NewExporter(slogadapter.GoKit(logger.Handler()), conf)
 
 	return integrations.NewCollectorIntegration(
 		c.Name(),

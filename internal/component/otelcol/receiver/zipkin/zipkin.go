@@ -46,6 +46,9 @@ func (args *Arguments) SetToDefault() {
 		HTTPServer: otelcol.HTTPServerArguments{
 			Endpoint:              "0.0.0.0:9411",
 			CompressionAlgorithms: append([]string(nil), otelcol.DefaultCompressionAlgorithms...),
+			IdleTimeout:           otelcol.DefaultHTTPServerIdleTimeout,
+			ReadHeaderTimeout:     otelcol.DefaultHTTPServerReadHeaderTimeout,
+			WriteTimeout:          otelcol.DefaultHTTPServerWriteTimeout,
 		},
 	}
 	args.DebugMetrics.SetToDefault()
@@ -53,7 +56,7 @@ func (args *Arguments) SetToDefault() {
 
 // Convert implements receiver.Arguments.
 func (args Arguments) Convert() (otelcomponent.Config, error) {
-	httpServerConfig, err := args.HTTPServer.Convert()
+	httpServerConfig, err := args.HTTPServer.ConvertToPtr()
 	if err != nil {
 		return nil, err
 	}

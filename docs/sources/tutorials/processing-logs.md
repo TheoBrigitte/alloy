@@ -351,7 +351,7 @@ Try executing the following which inserts the current timestamp:
 curl localhost:9999/loki/api/v1/raw -XPOST -H "Content-Type: application/json" -d '{"log": {"is_secret": "false", "level": "debug", "message": "This is a debug message!"}, "timestamp":  "'"$(date -u +"%Y-%m-%dT%H:%M:%SZ")"'"}'
 ```
 
-Now that you have sent some logs, its time to see how they look in Grafana.
+Now that you have sent some logs, it's time to see how they look in Grafana.
 Navigate to [http://localhost:3000/explore](http://localhost:3000/explore) and switch the data source to `Loki`.
 Try querying for `{source="demo-api"}` and see if you can find the logs you sent.
 
@@ -416,9 +416,9 @@ loki.write "local_loki" {
 
 [logs]: ../logs-and-relabeling-basics/
 [loki.source.api]: ../../reference/components/loki/loki.source.api/
-[loki.process#stage.drop]: ../../reference/components/loki/loki.process/#stagedrop-block
-[loki.process#stage.json]: ../../reference/components/loki/loki.process/#stagejson-block
-[loki.process#stage.labels]: ../../reference/components/loki/loki.process/#stagelabels-block
+[loki.process#stage.drop]: ../../reference/components/loki/loki.process/#stagedrop
+[loki.process#stage.json]: ../../reference/components/loki/loki.process/#stagejson
+[loki.process#stage.labels]: ../../reference/components/loki/loki.process/#stagelabels
 [discovery.docker]: ../../reference/components/discovery/discovery.docker/
 [loki.source.docker]: ../../reference/components/loki/loki.source.docker/
 [discovery.relabel]: ../../reference/components/discovery/discovery.relabel/

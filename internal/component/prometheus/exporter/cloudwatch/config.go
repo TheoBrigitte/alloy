@@ -3,19 +3,17 @@ package cloudwatch
 import (
 	"crypto/md5"
 	"encoding/hex"
+	"log/slog"
 	"time"
 
-	"github.com/go-kit/log"
-	yaceConf "github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/config"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/logging"
-	yaceModel "github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/model"
+	yaceConf "github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/config"
+	yaceModel "github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/model"
 
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 	"github.com/grafana/alloy/internal/static/integrations/cloudwatch_exporter"
 	"github.com/grafana/alloy/syntax"
 )
 
-// Avoid producing absence of values in metrics
+// Avoid producing absence of values in metrics.
 var defaultNilToZero = true
 
 var defaults = Arguments{
@@ -26,20 +24,26 @@ var defaults = Arguments{
 		Enabled:        false,
 		ScrapeInterval: 5 * time.Minute,
 	},
-	UseAWSSDKVersion2: false,
+	LabelsSnakeCase:   false,
+	UseAWSSDKVersion2: true,
 }
 
 // Arguments are the Alloy based options to configure the embedded CloudWatch exporter.
 type Arguments struct {
 	STSRegion             string                `alloy:"sts_region,attr"`
 	FIPSDisabled          bool                  `alloy:"fips_disabled,attr,optional"`
-	Debug                 bool                  `alloy:"debug,attr,optional"`
 	DiscoveryExportedTags TagsPerNamespace      `alloy:"discovery_exported_tags,attr,optional"`
 	Discovery             []DiscoveryJob        `alloy:"discovery,block,optional"`
 	Static                []StaticJob           `alloy:"static,block,optional"`
 	CustomNamespace       []CustomNamespaceJob  `alloy:"custom_namespace,block,optional"`
 	DecoupledScrape       DecoupledScrapeConfig `alloy:"decoupled_scraping,block,optional"`
-	UseAWSSDKVersion2     bool                  `alloy:"aws_sdk_version_v2,attr,optional"`
+	LabelsSnakeCase       bool                  `alloy:"labels_snake_case,attr,optional"`
+
+	// UseAWSSDKVersion2 is deprecated and has no effect.
+	UseAWSSDKVersion2 bool `alloy:"aws_sdk_version_v2,attr,optional"`
+
+	// Debug is deprecated and has no effect.
+	Debug bool `alloy:"debug,attr,optional"`
 }
 
 // DecoupledScrapeConfig is the configuration for decoupled scraping feature.
@@ -60,8 +64,11 @@ type DiscoveryJob struct {
 	DimensionNameRequirements []string       `alloy:"dimension_name_requirements,attr,optional"`
 	RecentlyActiveOnly        bool           `alloy:"recently_active_only,attr,optional"`
 	Metrics                   []Metric       `alloy:"metric,block"`
-	//TODO: Remove NilToZero, because it is deprecated upstream.
-	NilToZero *bool `alloy:"nil_to_zero,attr,optional"`
+	Period                    time.Duration  `alloy:"period,attr,optional"`
+	Length                    time.Duration  `alloy:"length,attr,optional"`
+	Delay                     time.Duration  `alloy:"delay,attr,optional"`
+	AddCloudwatchTimestamp    *bool          `alloy:"add_cloudwatch_timestamp,attr,optional"`
+	NilToZero                 *bool          `alloy:"nil_to_zero,attr,optional"`
 }
 
 // Tags represents a series of tags configured on an AWS resource. Each tag is a
@@ -76,7 +83,14 @@ type StaticJob struct {
 	Namespace  string         `alloy:"namespace,attr"`
 	Dimensions Dimensions     `alloy:"dimensions,attr"`
 	Metrics    []Metric       `alloy:"metric,block"`
-	//TODO: Remove NilToZero, because it is deprecated upstream.
+	Period     time.Duration  `alloy:"period,attr,optional"`
+	Length     time.Duration  `alloy:"length,attr,optional"`
+	Delay      time.Duration  `alloy:"delay,attr,optional"`
+	// NOTE: This field is actually not supported as a job level configuration option in YACE!
+	// https://github.com/prometheus-community/yet-another-cloudwatch-exporter/blob/0c9677d91836f0a4150a55172a0ce5081574b407/docs/configuration.md?plain=1#L177
+	// It should either be removed from Alloy in some major release, or
+	// contributed to YACE.
+	// We currently patch it in toStaticJob func to make it work and not break existing configs.
 	NilToZero *bool `alloy:"nil_to_zero,attr,optional"`
 }
 
@@ -88,8 +102,11 @@ type CustomNamespaceJob struct {
 	Namespace                 string         `alloy:"namespace,attr"`
 	RecentlyActiveOnly        bool           `alloy:"recently_active_only,attr,optional"`
 	Metrics                   []Metric       `alloy:"metric,block"`
-	//TODO: Remove NilToZero, because it is deprecated upstream.
-	NilToZero *bool `alloy:"nil_to_zero,attr,optional"`
+	Delay                     time.Duration  `alloy:"delay,attr,optional"`
+	Period                    time.Duration  `alloy:"period,attr,optional"`
+	Length                    time.Duration  `alloy:"length,attr,optional"`
+	AddCloudwatchTimestamp    *bool          `alloy:"add_cloudwatch_timestamp,attr,optional"`
+	NilToZero                 *bool          `alloy:"nil_to_zero,attr,optional"`
 }
 
 // RegionAndRoles exposes for each supported job, the AWS regions and IAM roles
@@ -111,7 +128,7 @@ type Dimensions map[string]string
 type Metric struct {
 	Name                   string        `alloy:"name,attr"`
 	Statistics             []string      `alloy:"statistics,attr"`
-	Period                 time.Duration `alloy:"period,attr"`
+	Period                 time.Duration `alloy:"period,attr,optional"`
 	Length                 time.Duration `alloy:"length,attr,optional"`
 	NilToZero              *bool         `alloy:"nil_to_zero,attr,optional"`
 	AddCloudwatchTimestamp *bool         `alloy:"add_cloudwatch_timestamp,attr,optional"`
@@ -125,7 +142,7 @@ func (a *Arguments) SetToDefault() {
 // ConvertToYACE converts the Alloy config into YACE config model. Note that
 // the conversion is not direct, some values have been opinionated to simplify
 // the config model Alloy exposes for this integration.
-func ConvertToYACE(a Arguments, logger log.Logger) (yaceModel.JobsConfig, error) {
+func ConvertToYACE(a Arguments, logger *slog.Logger) (yaceModel.JobsConfig, error) {
 	// Once the support for deprecated aliases is dropped, this function (convertAliasesToNamespaces) can be removed.
 	convertAliasesToNamespaces(&a, logger)
 
@@ -135,12 +152,12 @@ func ConvertToYACE(a Arguments, logger log.Logger) (yaceModel.JobsConfig, error)
 // convertAliasesToNamespaces converts the deprecated service aliases to their corresponding namespaces.
 // This function is added for the backward compatibility of the deprecated service aliases. This compatibility
 // may be removed in the future.
-func convertAliasesToNamespaces(a *Arguments, logger log.Logger) {
+func convertAliasesToNamespaces(a *Arguments, logger *slog.Logger) {
 	for i, job := range a.Discovery {
 		if job.Type != "" {
 			if svc := yaceConf.SupportedServices.GetService(job.Type); svc == nil {
 				if namespace := getServiceByAlias(job.Type); namespace != "" {
-					level.Warn(logger).Log("msg", "service alias is deprecated, use the namespace instead", "alias", job.Type, "namespace", namespace)
+					logger.Warn("service alias is deprecated, use the namespace instead", "alias", job.Type, "namespace", namespace)
 					a.Discovery[i].Type = namespace
 				}
 			}
@@ -150,7 +167,7 @@ func convertAliasesToNamespaces(a *Arguments, logger log.Logger) {
 	for i, job := range a.Static {
 		if svc := yaceConf.SupportedServices.GetService(job.Namespace); svc == nil {
 			if namespace := getServiceByAlias(job.Namespace); namespace != "" {
-				level.Warn(logger).Log("msg", "service alias is deprecated, use the namespace instead", "alias", job.Namespace, "namespace", namespace)
+				logger.Warn("service alias is deprecated, use the namespace instead", "alias", job.Namespace, "namespace", namespace)
 				a.Static[i].Namespace = namespace
 			}
 		}
@@ -162,7 +179,7 @@ func convertAliasesToNamespaces(a *Arguments, logger log.Logger) {
 		for namespace, tags := range a.DiscoveryExportedTags {
 			if svc := yaceConf.SupportedServices.GetService(namespace); svc == nil {
 				if ns := getServiceByAlias(namespace); ns != "" {
-					level.Warn(logger).Log("msg", "service alias is deprecated, use the namespace instead", "alias", namespace, "namespace", ns)
+					logger.Warn("service alias is deprecated, use the namespace instead", "alias", namespace, "namespace", ns)
 					newDiscoveryExportedTags[ns] = tags
 				}
 			} else {
@@ -211,11 +228,10 @@ func convertToYACE(a Arguments) (yaceModel.JobsConfig, error) {
 
 	// Run the exporter's config validation. Between other things, it will check that the service for which a discovery
 	// job is instantiated, it's supported.
-	modelConf, err := conf.Validate(logging.NewNopLogger())
+	modelConf, err := conf.Validate(slog.New(slog.DiscardHandler))
 	if err != nil {
 		return yaceModel.JobsConfig{}, err
 	}
-	cloudwatch_exporter.PatchYACEDefaults(&modelConf)
 
 	return modelConf, nil
 }
@@ -231,7 +247,7 @@ func (tags Tags) toYACE() []yaceConf.Tag {
 func toYACERoles(rs []Role) []yaceConf.Role {
 	yaceRoles := []yaceConf.Role{}
 	// YACE defaults to an empty role, which means the environment configured role is used
-	// https://github.com/nerdswords/yet-another-cloudwatch-exporter/blob/30aeceb2324763cdd024a1311045f83a09c1df36/pkg/config/config.go#L111
+	// https://github.com/prometheus-community/yet-another-cloudwatch-exporter/blob/30aeceb2324763cdd024a1311045f83a09c1df36/pkg/config/config.go#L111
 	if len(rs) == 0 {
 		yaceRoles = append(yaceRoles, yaceConf.Role{})
 	}
@@ -241,19 +257,29 @@ func toYACERoles(rs []Role) []yaceConf.Role {
 	return yaceRoles
 }
 
-func toYACEMetrics(ms []Metric, jobNilToZero *bool) []*yaceConf.Metric {
+func toYACEMetrics(ms []Metric, jobPeriod time.Duration, jobLength time.Duration) []*yaceConf.Metric {
 	yaceMetrics := []*yaceConf.Metric{}
 	for _, m := range ms {
+		if m.Period == 0 {
+			m.Period = jobPeriod
+		}
+		if m.Length == 0 {
+			m.Length = jobLength
+		}
+
 		periodSeconds := int64(m.Period.Seconds())
 		lengthSeconds := periodSeconds
-		// If length is other than zero, that is, is configured, override the default period vaue
+		// If length is other than zero, that is, it is configured, override the default length value
 		if m.Length != 0 {
 			lengthSeconds = int64(m.Length.Seconds())
 		}
-		nilToZero := m.NilToZero
-		if nilToZero == nil {
-			nilToZero = jobNilToZero
-		}
+
+		/* Scenarios:
+		- Period and length are zero (not set) -> Period = "5m", Length = "5m". These defaults are set by YACE.
+		- Period = 1m, Length = 0m -> Period = "1m", Length = "1m". Length is set equal to Period by this function.
+		- Period = 0, Length = 10m -> Period = "5m", Length = "10m". Period is set to the default value by YACE.
+		- Period = 10m, Length = 2m -> Period = "10m", Length = "2m". This is not a valid configuration and will cause an error produced by YACE. See https://github.com/prometheus-community/yet-another-cloudwatch-exporter/blob/292db29c1537af84a5e831b007bc9ff501708eaa/pkg/config/config.go#L390
+		*/
 		yaceMetrics = append(yaceMetrics, &yaceConf.Metric{
 			Name:       m.Name,
 			Statistics: m.Statistics,
@@ -266,11 +292,7 @@ func toYACEMetrics(ms []Metric, jobNilToZero *bool) []*yaceConf.Metric {
 			Period: periodSeconds,
 			Length: lengthSeconds,
 
-			// Delay moves back the time window for whom CloudWatch is requested data. Since we are already adjusting
-			// this with RoundingPeriod (see toYACEDiscoveryJob), we should omit this setting.
-			Delay: 0,
-
-			NilToZero:              nilToZero,
+			NilToZero:              m.NilToZero,
 			AddCloudwatchTimestamp: m.AddCloudwatchTimestamp,
 		})
 	}
@@ -285,10 +307,19 @@ func toYACEStaticJob(sj StaticJob) *yaceConf.Static {
 			Value: value,
 		})
 	}
-	nilToZero := sj.NilToZero
-	if nilToZero == nil {
-		nilToZero = &defaultNilToZero
+
+	// For each metric in sj.Metrics, if NilToZero is not set, set the NilToZero to the job level NilToZero or DefaultNilToZero.
+	// This is needed to make the `nil_to_zero` job level option work in static jobs as this is not natively supported by YACE.
+	for i, m := range sj.Metrics {
+		if m.NilToZero == nil {
+			if sj.NilToZero == nil {
+				sj.Metrics[i].NilToZero = &defaultNilToZero
+			} else {
+				sj.Metrics[i].NilToZero = sj.NilToZero
+			}
+		}
 	}
+
 	return &yaceConf.Static{
 		Name:       sj.Name,
 		Regions:    sj.Auth.Regions,
@@ -296,11 +327,12 @@ func toYACEStaticJob(sj StaticJob) *yaceConf.Static {
 		Namespace:  sj.Namespace,
 		CustomTags: sj.CustomTags.toYACE(),
 		Dimensions: dims,
-		Metrics:    toYACEMetrics(sj.Metrics, nilToZero),
+		Metrics:    toYACEMetrics(sj.Metrics, 0, 0),
 	}
 }
 
 func toYACEDiscoveryJob(rj DiscoveryJob) *yaceConf.Job {
+	// The default of YACE is false, but for Alloy we want to default to true.
 	nilToZero := rj.NilToZero
 	if nilToZero == nil {
 		nilToZero = &defaultNilToZero
@@ -312,16 +344,21 @@ func toYACEDiscoveryJob(rj DiscoveryJob) *yaceConf.Job {
 		CustomTags:                rj.CustomTags.toYACE(),
 		SearchTags:                rj.SearchTags.toYACE(),
 		DimensionNameRequirements: rj.DimensionNameRequirements,
-		// By setting RoundingPeriod to nil, the exporter will align the start and end times for retrieving CloudWatch
-		// metrics, with the smallest period in the retrieved batch.
-		RoundingPeriod:     nil,
-		RecentlyActiveOnly: rj.RecentlyActiveOnly,
-		Metrics:            toYACEMetrics(rj.Metrics, nilToZero),
+		RecentlyActiveOnly:        rj.RecentlyActiveOnly,
+		JobLevelMetricFields: yaceConf.JobLevelMetricFields{
+			AddCloudwatchTimestamp: rj.AddCloudwatchTimestamp,
+			Period:                 int64(rj.Period.Seconds()),
+			Length:                 int64(rj.Length.Seconds()),
+			Delay:                  int64(rj.Delay.Seconds()),
+			NilToZero:              nilToZero,
+		},
+		Metrics: toYACEMetrics(rj.Metrics, rj.Period, rj.Length),
 	}
 	return job
 }
 
 func toYACECustomNamespaceJob(cn CustomNamespaceJob) *yaceConf.CustomNamespace {
+	// The default of YACE is false, but for Alloy we want to default to true.
 	nilToZero := cn.NilToZero
 	if nilToZero == nil {
 		nilToZero = &defaultNilToZero
@@ -333,11 +370,15 @@ func toYACECustomNamespaceJob(cn CustomNamespaceJob) *yaceConf.CustomNamespace {
 		Roles:                     toYACERoles(cn.Auth.Roles),
 		CustomTags:                cn.CustomTags.toYACE(),
 		DimensionNameRequirements: cn.DimensionNameRequirements,
-		// By setting RoundingPeriod to nil, the exporter will align the start and end times for retrieving CloudWatch
-		// metrics, with the smallest period in the retrieved batch.
-		RoundingPeriod:     nil,
-		RecentlyActiveOnly: cn.RecentlyActiveOnly,
-		Metrics:            toYACEMetrics(cn.Metrics, nilToZero),
+		RecentlyActiveOnly:        cn.RecentlyActiveOnly,
+		JobLevelMetricFields: yaceConf.JobLevelMetricFields{
+			AddCloudwatchTimestamp: cn.AddCloudwatchTimestamp,
+			Period:                 int64(cn.Period.Seconds()),
+			Length:                 int64(cn.Length.Seconds()),
+			Delay:                  int64(cn.Delay.Seconds()),
+			NilToZero:              nilToZero,
+		},
+		Metrics: toYACEMetrics(cn.Metrics, cn.Period, cn.Length),
 	}
 }
 

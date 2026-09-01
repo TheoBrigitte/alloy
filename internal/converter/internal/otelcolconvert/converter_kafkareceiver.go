@@ -3,13 +3,13 @@ package otelcolconvert
 import (
 	"fmt"
 
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/grafana/alloy/internal/component/otelcol"
 	"github.com/grafana/alloy/internal/component/otelcol/receiver/kafka"
 	"github.com/grafana/alloy/internal/converter/diag"
 	"github.com/grafana/alloy/internal/converter/internal/common"
 	"github.com/grafana/alloy/syntax/alloytypes"
-	"github.com/mitchellh/mapstructure"
-	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/kafkaexporter"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/kafka/configkafka"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/kafkareceiver"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componentstatus"
@@ -52,28 +52,46 @@ func toKafkaReceiver(state *State, id componentstatus.InstanceID, cfg *kafkarece
 		nextTraces  = state.Next(id, pipeline.SignalTraces)
 	)
 
+	var tlsCfgPtr *otelcol.TLSClientArguments
+	if cfg.ClientConfig.TLS != nil {
+		tlsCfg := toTLSClientArguments(*cfg.ClientConfig.TLS)
+		tlsCfgPtr = &tlsCfg
+	}
+
+	rebalanceStrategy, rebalanceStrategies := toKafkaRebalance(cfg.ConsumerConfig)
 	return &kafka.Arguments{
-		Brokers:           cfg.Brokers,
-		ProtocolVersion:   cfg.ProtocolVersion,
-		SessionTimeout:    cfg.SessionTimeout,
-		HeartbeatInterval: cfg.HeartbeatInterval,
-		Topic:             cfg.Topic,
-		Encoding:          cfg.Encoding,
-		GroupID:           cfg.GroupID,
-		ClientID:          cfg.ClientID,
-		InitialOffset:     cfg.InitialOffset,
+		Brokers:           cfg.ClientConfig.Brokers,
+		ProtocolVersion:   cfg.ClientConfig.ProtocolVersion,
+		SessionTimeout:    cfg.ConsumerConfig.SessionTimeout,
+		HeartbeatInterval: cfg.ConsumerConfig.HeartbeatInterval,
+		GroupID:           cfg.ConsumerConfig.GroupID,
+		ClientID:          cfg.ClientConfig.ClientID,
+		InitialOffset:     cfg.ConsumerConfig.InitialOffset,
+		ConnIdleTimeout:   cfg.ClientConfig.ConnIdleTimeout,
 
-		ResolveCanonicalBootstrapServersOnly: cfg.ResolveCanonicalBootstrapServersOnly,
+		ResolveCanonicalBootstrapServersOnly: cfg.ClientConfig.ResolveCanonicalBootstrapServersOnly,
 
-		Authentication:   toKafkaAuthentication(encodeMapstruct(cfg.Authentication)),
-		Metadata:         toKafkaMetadata(cfg.Metadata),
-		AutoCommit:       toKafkaAutoCommit(cfg.AutoCommit),
+		Authentication:   toKafkaAuthentication(encodeMapstruct(cfg.ClientConfig.Authentication)),
+		Metadata:         toKafkaMetadata(cfg.ClientConfig.Metadata),
+		AutoCommit:       toKafkaAutoCommit(cfg.ConsumerConfig.AutoCommit),
 		MessageMarking:   toKafkaMessageMarking(cfg.MessageMarking),
 		HeaderExtraction: toKafkaHeaderExtraction(cfg.HeaderExtraction),
 
-		MinFetchSize:     cfg.MinFetchSize,
-		DefaultFetchSize: cfg.DefaultFetchSize,
-		MaxFetchSize:     cfg.MaxFetchSize,
+		TLS: tlsCfgPtr,
+
+		Logs:    toKafkaTopicEncodingConfig(cfg.Logs),
+		Metrics: toKafkaTopicEncodingConfig(cfg.Metrics),
+		Traces:  toKafkaTopicEncodingConfig(cfg.Traces),
+
+		MinFetchSize:             cfg.ConsumerConfig.MinFetchSize,
+		MaxFetchSize:             cfg.ConsumerConfig.MaxFetchSize,
+		MaxPartitionFetchSize:    cfg.ConsumerConfig.MaxPartitionFetchSize,
+		MaxFetchWait:             cfg.ConsumerConfig.MaxFetchWait,
+		RackID:                   cfg.ClientConfig.RackID,
+		UseLeaderEpoch:           cfg.ClientConfig.UseLeaderEpoch,
+		GroupRebalanceStrategy:   rebalanceStrategy,
+		GroupRebalanceStrategies: rebalanceStrategies,
+		GroupInstanceID:          cfg.ConsumerConfig.GroupInstanceID,
 
 		ErrorBackOff: toKafkaErrorBackOff(cfg.ErrorBackOff),
 
@@ -95,6 +113,14 @@ func toKafkaErrorBackOff(cfg configretry.BackOffConfig) kafka.ErrorBackOffArgume
 		Multiplier:          cfg.Multiplier,
 		MaxInterval:         cfg.MaxInterval,
 		MaxElapsedTime:      cfg.MaxElapsedTime,
+	}
+}
+
+func toKafkaTopicEncodingConfig(cfg kafkareceiver.TopicEncodingConfig) kafka.KafkaReceiverTopicEncodingConfig {
+	return kafka.KafkaReceiverTopicEncodingConfig{
+		Topics:        cfg.Topics,
+		Encoding:      cfg.Encoding,
+		ExcludeTopics: cfg.ExcludeTopics,
 	}
 }
 
@@ -138,8 +164,7 @@ func toKafkaAWSMSK(cfg map[string]any) otelcol.KafkaAWSMSKArguments {
 	}
 
 	return otelcol.KafkaAWSMSKArguments{
-		Region:     cfg["region"].(string),
-		BrokerAddr: cfg["broker_addr"].(string),
+		Region: cfg["region"].(string),
 	}
 }
 
@@ -175,21 +200,22 @@ func toKafkaKerberos(cfg map[string]any) *otelcol.KafkaKerberosArguments {
 	}
 }
 
-func toKafkaMetadata(cfg kafkaexporter.Metadata) otelcol.KafkaMetadataArguments {
+func toKafkaMetadata(cfg configkafka.MetadataConfig) otelcol.KafkaMetadataArguments {
 	return otelcol.KafkaMetadataArguments{
-		IncludeAllTopics: cfg.Full,
-		Retry:            toKafkaRetry(cfg.Retry),
+		Full:            cfg.Full,
+		RefreshInterval: cfg.RefreshInterval,
+		Retry:           toKafkaRetry(cfg.Retry),
 	}
 }
 
-func toKafkaRetry(cfg kafkaexporter.MetadataRetry) otelcol.KafkaMetadataRetryArguments {
+func toKafkaRetry(cfg configkafka.MetadataRetryConfig) otelcol.KafkaMetadataRetryArguments {
 	return otelcol.KafkaMetadataRetryArguments{
 		MaxRetries: cfg.Max,
 		Backoff:    cfg.Backoff,
 	}
 }
 
-func toKafkaAutoCommit(cfg kafkareceiver.AutoCommit) kafka.AutoCommitArguments {
+func toKafkaAutoCommit(cfg configkafka.AutoCommitConfig) kafka.AutoCommitArguments {
 	return kafka.AutoCommitArguments{
 		Enable:   cfg.Enable,
 		Interval: cfg.Interval,
@@ -215,5 +241,20 @@ func toKafkaHeaderExtraction(cfg kafkareceiver.HeaderExtraction) kafka.HeaderExt
 	return kafka.HeaderExtraction{
 		ExtractHeaders: cfg.ExtractHeaders,
 		Headers:        cfg.Headers,
+	}
+}
+
+func toKafkaRebalance(cfg configkafka.ConsumerConfig) (strategy string, strategies []string) {
+	switch {
+	case len(cfg.GroupRebalanceStrategies) > 0:
+		strategies = make([]string, 0, len(cfg.GroupRebalanceStrategies))
+		for _, s := range cfg.GroupRebalanceStrategies {
+			strategies = append(strategies, string(s))
+		}
+		return "", strategies
+	case cfg.GroupRebalanceStrategy != "":
+		return string(cfg.GroupRebalanceStrategy), nil
+	default:
+		return string(configkafka.CooperativeStickyBalanceStrategy), nil
 	}
 }

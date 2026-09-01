@@ -4,418 +4,294 @@ package file
 // tailer implements the reader interface by using the github.com/grafana/tail package to tail files.
 
 import (
-	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
 
-	"github.com/go-kit/log"
-	"github.com/grafana/loki/v3/pkg/logproto"
-	"github.com/grafana/loki/v3/pkg/util"
-	"github.com/grafana/tail"
-	"github.com/grafana/tail/watch"
+	"github.com/grafana/loki/pkg/push"
 	"github.com/prometheus/common/model"
 	"go.uber.org/atomic"
-	"golang.org/x/text/encoding"
-	"golang.org/x/text/encoding/ianaindex"
-	"golang.org/x/text/transform"
 
 	"github.com/grafana/alloy/internal/component/common/loki"
-	"github.com/grafana/alloy/internal/component/common/loki/positions"
-	"github.com/grafana/alloy/internal/component/common/loki/utils"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
+	"github.com/grafana/alloy/internal/component/loki/source/file/internal/tail"
+	"github.com/grafana/alloy/internal/component/loki/source/internal/positions"
+	"github.com/grafana/alloy/internal/util"
 )
 
 type tailer struct {
 	metrics   *metrics
-	logger    log.Logger
+	logger    *slog.Logger
 	receiver  loki.LogsReceiver
 	positions positions.Positions
 
-	path      string
-	labelsStr string
-	labels    model.LabelSet
+	key                positions.Entry
+	labels             model.LabelSet
+	legacyPositionUsed bool
 
-	tailFromEnd bool
-	pollOptions watch.PollingFileWatcherOptions
-
-	posAndSizeMtx sync.Mutex
+	tailFromEnd          bool
+	onPositionsFileError OnPositionsFileError
+	watcherConfig        tail.WatcherConfig
 
 	running *atomic.Bool
 
 	componentStopping func() bool
 
-	mut      sync.RWMutex
-	stopping bool
-	tail     *tail.Tail
-	posquit  chan struct{} // used by the readLine method to tell the updatePosition method to stop
-	posdone  chan struct{} // used by the updatePosition method to notify when it stopped
-	done     chan struct{} // used by the readLine method to notify when it stopped
+	report sync.Once
 
-	decoder *encoding.Decoder
+	file          *tail.File
+	encoding      string
+	decompression DecompressionConfig
 }
 
-func newTailer(metrics *metrics, logger log.Logger, receiver loki.LogsReceiver, positions positions.Positions, path string,
-	labels model.LabelSet, encoding string, pollOptions watch.PollingFileWatcherOptions, tailFromEnd bool, componentStopping func() bool) (*tailer, error) {
+func newTailer(
+	metrics *metrics,
+	logger *slog.Logger,
+	receiver loki.LogsReceiver,
+	pos positions.Positions,
+	componentStopping func() bool,
+	opts sourceOptions,
+) *tailer {
 
-	tailer := &tailer{
-		metrics:           metrics,
-		logger:            log.With(logger, "component", "tailer"),
-		receiver:          receiver,
-		positions:         positions,
-		path:              path,
-		labels:            labels,
-		labelsStr:         labels.String(),
-		running:           atomic.NewBool(false),
-		tailFromEnd:       tailFromEnd,
-		pollOptions:       pollOptions,
+	return &tailer{
+		metrics:              metrics,
+		logger:               logger.With("component", "tailer", "path", opts.path),
+		receiver:             receiver,
+		positions:            pos,
+		key:                  positions.Entry{Path: opts.path, Labels: opts.labels.String()},
+		labels:               opts.labels.Merge(model.LabelSet{labelFilename: model.LabelValue(opts.path)}),
+		running:              atomic.NewBool(false),
+		tailFromEnd:          opts.tailFromEnd,
+		legacyPositionUsed:   opts.legacyPositionUsed,
+		onPositionsFileError: opts.onPositionsFileError,
+		watcherConfig: tail.WatcherConfig{
+			MinPollFrequency: opts.fileWatch.MinPollFrequency,
+			MaxPollFrequency: opts.fileWatch.MaxPollFrequency,
+		},
 		componentStopping: componentStopping,
-	}
-
-	if encoding != "" {
-		level.Info(tailer.logger).Log("msg", "Will decode messages", "from", encoding, "to", "UTF8")
-		encoder, err := ianaindex.IANA.Encoding(encoding)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get IANA encoding %s: %w", encoding, err)
-		}
-		decoder := encoder.NewDecoder()
-		tailer.decoder = decoder
-	}
-
-	return tailer, nil
-}
-
-// getLastLinePosition returns the offset of the start of the last line in the file at the given path.
-// It will read chunks of bytes starting from the end of the file to return the position of the last '\n' + 1.
-// If it cannot find any '\n' it will return 0.
-func getLastLinePosition(path string) (int64, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return 0, err
-	}
-	defer file.Close()
-
-	const chunkSize = 1024
-
-	buf := make([]byte, chunkSize)
-	fi, err := file.Stat()
-	if err != nil {
-		return 0, err
-	}
-
-	if fi.Size() == 0 {
-		return 0, nil
-	}
-
-	var pos = fi.Size() - chunkSize
-	if pos < 0 {
-		pos = 0
-	}
-
-	for {
-		_, err = file.Seek(pos, io.SeekStart)
-		if err != nil {
-			return 0, err
-		}
-
-		bytesRead, err := file.Read(buf)
-		if err != nil {
-			return 0, err
-		}
-
-		idx := bytes.LastIndexByte(buf[:bytesRead], '\n')
-		// newline found
-		if idx != -1 {
-			return pos + int64(idx) + 1, nil
-		}
-
-		// no newline found in the entire file
-		if pos == 0 {
-			return 0, nil
-		}
-
-		pos -= chunkSize
-		if pos < 0 {
-			pos = 0
-		}
+		report:            sync.Once{},
+		encoding:          opts.encoding,
+		decompression:     opts.decompressionConfig,
 	}
 }
 
-func (t *tailer) Run() {
-	// only if initRun succeeds, the channels t.done, t.posdone, t.posquit are initialized
-	handler, err := t.initRun()
+func (t *tailer) Run(ctx context.Context) {
+	// Check if context was canceled between two calls to Run.
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
+
+	pos, err := t.initRun()
 	if err != nil {
-		level.Error(t.logger).Log("msg", "failed to run tailer", "err", err)
+		// We are retrying tailers until the target has disappeared.
+		// We are mostly interested in this log if this happens directly when
+		// the tailer is scheduled and not on retries.
+		t.report.Do(func() {
+			t.logger.Error("failed to run tailer", "error", err)
+		})
 		return
 	}
 
-	defer handler.Stop()
-
-	// updatePosition closes the channel t.posdone on exit
-	go t.updatePosition()
-	t.metrics.filesActive.Add(1.)
-
-	// readLines closes the channels t.done and t.posquit on exit
-	t.readLines(handler)
+	// We call report so that retries won't log.
+	t.report.Do(func() {})
+	t.tail(ctx, pos)
 }
 
-func (t *tailer) initRun() (loki.EntryHandler, error) {
-	t.mut.Lock()
-	defer t.mut.Unlock()
-
-	// Check if the stop function was called between two Run.
-	if t.stopping {
-		return nil, fmt.Errorf("tailer stopped")
-	}
-
-	fi, err := os.Stat(t.path)
+func (t *tailer) initRun() (int64, error) {
+	fi, err := os.Stat(t.key.Path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to tail file: %w", err)
+		return 0, fmt.Errorf("failed to tail file: %w", err)
 	}
 
-	pos, err := t.positions.Get(t.path, t.labelsStr)
+	startFromEnd := t.tailFromEnd
+
+	pos, err := t.positions.Get(t.key.Path, t.key.Labels)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get file position: %w", err)
+		switch t.onPositionsFileError {
+		case OnPositionsFileErrorSkip:
+			return 0, fmt.Errorf("failed to get file position: %w", err)
+		case OnPositionsFileErrorRestartEnd:
+			startFromEnd = true
+			t.logger.Info("reset position to end of file after position error")
+		default:
+			t.logger.Debug("unrecognized `on_positions_file_error` option, defaulting to `restart_from_beginning`", "option", t.onPositionsFileError)
+			fallthrough
+		case OnPositionsFileErrorRestartBeginning:
+			pos = 0
+			t.logger.Info("reset position to start of file after positions error")
+		}
 	}
 
-	// NOTE: The code assumes that if a position is available and that the file is bigger than the position, then
+	// If we translated legacy positions we should try to get position offset without labels
+	// when no other position was matched.
+	if pos == 0 && t.legacyPositionUsed {
+		pos, err = t.positions.Get(t.key.Path, "{}")
+		if err != nil {
+			return 0, fmt.Errorf("failed to get file position with empty labels: %w", err)
+		}
+	}
+
+	// NOTE: The code assumes that if a position is available and that the file is smaller than the position, then
 	// the tail should start from the position. This may not be always desired in situation where the file was rotated
 	// with a file that has the same name but different content and a bigger size that the previous one. This problem would
 	// mostly show up on Windows because on Unix systems, the readlines function is not exited on file rotation.
 	// If this ever becomes a problem, we may want to consider saving and comparing file creation timestamps.
 	if fi.Size() < pos {
-		t.positions.Remove(t.path, t.labelsStr)
+		t.positions.Remove(t.key.Path, t.key.Labels)
 	}
 
-	// If no cached position is found and the tailFromEnd option is enabled.
-	if pos == 0 && t.tailFromEnd {
-		pos, err = getLastLinePosition(t.path)
-		if err != nil {
-			level.Error(t.logger).Log("msg", "failed to get a position from the end of the file, default to start of file", err)
-		} else {
-			t.positions.Put(t.path, t.labelsStr, pos)
-			level.Info(t.logger).Log("msg", "retrieved and stored the position of the last line")
-		}
-	}
-
-	tail, err := tail.TailFile(t.path, tail.Config{
-		Follow:    true,
-		Poll:      true,
-		ReOpen:    true,
-		MustExist: true,
-		Location: &tail.SeekInfo{
-			Offset: pos,
-			Whence: 0,
-		},
-		Logger:      util.NewLogAdapter(t.logger),
-		PollOptions: t.pollOptions,
+	file, err := tail.NewFile(t.logger, &tail.Config{
+		Filename:      t.key.Path,
+		Offset:        pos,
+		StartFromEnd:  startFromEnd,
+		Encoding:      t.encoding,
+		Compression:   t.decompression.GetFormat(),
+		WatcherConfig: t.watcherConfig,
 	})
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to tail the file: %w", err)
+		return pos, fmt.Errorf("failed to tail the file: %w", err)
 	}
 
-	t.tail = tail
-	labelsMiddleware := t.labels.Merge(model.LabelSet{filenameLabel: model.LabelValue(t.path)})
-	handler := loki.AddLabelsMiddleware(labelsMiddleware).Wrap(loki.NewEntryHandler(t.receiver.Chan(), func() {}))
-	t.posquit = make(chan struct{})
-	t.posdone = make(chan struct{})
-	t.done = make(chan struct{})
-	return handler, nil
+	t.file = file
+
+	return pos, nil
 }
 
-// updatePosition is run in a goroutine and checks the current size of the file
-// and saves it to the positions file at a regular interval. If there is ever
-// an error it stops the tailer and exits, the tailer will be re-opened by the
-// backoff retry method if it still exists and will start reading from the
-// last successful entry in the positions file.
-func (t *tailer) updatePosition() {
-	positionSyncPeriod := t.positions.SyncPeriod()
-	positionWait := time.NewTicker(positionSyncPeriod)
-	defer func() {
-		positionWait.Stop()
-		level.Info(t.logger).Log("msg", "position timer: exited", "path", t.path)
-		// NOTE: metrics must be cleaned up after the position timer exits, as markPositionAndSize() updates metrics.
-		t.cleanupMetrics()
-		close(t.posdone)
-	}()
-
-	for {
-		select {
-		case <-positionWait.C:
-			err := t.markPositionAndSize()
-			if err != nil {
-				level.Error(t.logger).Log("msg", "position timer: error getting tail position and/or size, stopping tailer", "path", t.path, "error", err)
-				err := t.tail.Stop()
-				if err != nil {
-					level.Error(t.logger).Log("msg", "position timer: error stopping tailer", "path", t.path, "error", err)
-				}
-				return
-			}
-		case <-t.posquit:
-			return
-		}
-	}
-}
-
-// readLines consumes the t.tail.Lines channel from the
-// underlying tailer. It will only exit when that channel is closed. This is
-// important to avoid a deadlock in the underlying tailer which can happen if
-// there are unread lines in this channel and the Stop method on the tailer is
-// called, the underlying tailer will never exit if there are unread lines in
-// the t.tail.Lines channel
-func (t *tailer) readLines(handler loki.EntryHandler) {
-	level.Info(t.logger).Log("msg", "tail routine: started", "path", t.path)
-
+// tail reads lines from the file and forwards them to the receiver, periodically
+// recording the read offset. It blocks until ctx is canceled or the file is fully read.
+func (t *tailer) tail(ctx context.Context, pos int64) {
 	t.running.Store(true)
+	t.metrics.filesActive.Add(1.)
+	t.logger.Info("start tailing file")
+
+	if t.decompression.Enabled && t.decompression.InitialDelay > 0 {
+		t.logger.Info("sleeping before reading file", "duration", t.decompression.InitialDelay.String())
+		time.Sleep(t.decompression.InitialDelay)
+	}
+
+	var (
+		lastOffset          = pos
+		entries             = t.receiver.Chan()
+		positionInterval    = t.positions.SyncPeriod()
+		lastUpdatedPosition = time.Time{}
+	)
 
 	defer func() {
 		t.running.Store(false)
-		level.Info(t.logger).Log("msg", "tail routine: exited", "path", t.path)
-		close(t.done)
-		// Shut down the position marker thread
-		close(t.posquit)
+		size, _ := t.file.Size()
+		t.updateStats(lastOffset, size)
+
+		if err := t.file.Close(); err != nil {
+			if util.IsEphemeralOrFileClosed(err) {
+				// Don't log as error if the file is already closed, or we got an ephemeral error - it's a common case
+				// when files are rotating while being read and the tailer would have stopped correctly anyway.
+				t.logger.Debug("failed to stop tailer", "error", err)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				// Log as error for other reasons, as a resource leak may have happened.
+				t.logger.Error("failed to stop tailer", "error", err)
+			}
+		}
+
+		t.logger.Info("stopped tailing file")
+
+		// We need to cleanup created metrics.
+		t.cleanupMetrics()
+		if !t.shouldKeepPosition() {
+			t.positions.Remove(t.key.Path, t.key.Labels)
+		}
 	}()
-	entries := handler.Chan()
+
+	nextLine := func() (*tail.Line, error) {
+		for {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+
+			line, err := t.file.Next()
+			if !errors.Is(err, io.EOF) {
+				return line, err
+			}
+
+			if t.decompression.Enabled {
+				return t.file.Flush()
+			}
+
+			if err := t.file.Wait(ctx); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	for {
-		line, ok := <-t.tail.Lines
-		if !ok {
-			level.Info(t.logger).Log("msg", "tail routine: tail channel closed, stopping tailer", "path", t.path, "reason", t.tail.Tomb.Err())
+		line, err := nextLine()
+		if err != nil {
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, io.EOF) {
+				t.logger.Error("failed to tail file", "err", err)
+			}
 			return
 		}
 
-		// Note currently the tail implementation hardcodes Err to nil, this should never hit.
-		if line.Err != nil {
-			level.Error(t.logger).Log("msg", "tail routine: error reading line", "path", t.path, "error", line.Err)
-			continue
-		}
-
-		var text string
-		if t.decoder != nil {
-			var err error
-			text, err = t.convertToUTF8(line.Text)
-			if err != nil {
-				level.Debug(t.logger).Log("msg", "failed to convert encoding", "error", err)
-				t.metrics.encodingFailures.WithLabelValues(t.path).Inc()
-				text = fmt.Sprintf("the requested encoding conversion for this line failed in Alloy: %s", err.Error())
+		t.metrics.readLines.WithLabelValues(t.key.Path).Inc()
+		select {
+		case <-ctx.Done():
+			return
+		case entries <- loki.NewEntry(t.labels, push.Entry{
+			Timestamp: line.Time,
+			Line:      line.Text,
+		}):
+			lastOffset = line.Offset
+			if time.Since(lastUpdatedPosition) >= positionInterval {
+				lastUpdatedPosition = time.Now()
+				size, _ := t.file.Size()
+				t.updateStats(lastOffset, size)
 			}
-		} else {
-			text = line.Text
-		}
-
-		t.metrics.readLines.WithLabelValues(t.path).Inc()
-		entries <- loki.Entry{
-			Labels: model.LabelSet{},
-			Entry: logproto.Entry{
-				Timestamp: line.Time,
-				Line:      text,
-			},
 		}
 	}
 }
 
-func (t *tailer) markPositionAndSize() error {
-	// Lock this update because it can be called in two different goroutines
-	t.posAndSizeMtx.Lock()
-	defer t.posAndSizeMtx.Unlock()
-
-	size, err := t.tail.Size()
-	if err != nil {
-		// If the file no longer exists, no need to save position information
-		if err == os.ErrNotExist {
-			level.Info(t.logger).Log("msg", "skipping update of position for a file which does not currently exist", "path", t.path)
-			return nil
-		}
-		return err
-	}
-
-	pos, err := t.tail.Tell()
-	if err != nil {
-		return err
-	}
-
-	// Update metrics and positions file all together to avoid race conditions when `t.tail` is stopped.
-	t.metrics.totalBytes.WithLabelValues(t.path).Set(float64(size))
-	t.metrics.readBytes.WithLabelValues(t.path).Set(float64(pos))
-	t.positions.Put(t.path, t.labelsStr, pos)
-
-	return nil
+func (t *tailer) updateStats(offset int64, size int64) {
+	// Update metrics and the positions file together so the reported offset stays consistent.
+	t.metrics.totalBytes.WithLabelValues(t.key.Path).Set(float64(size))
+	t.metrics.readBytes.WithLabelValues(t.key.Path).Set(float64(offset))
+	t.positions.Put(t.key.Path, t.key.Labels, offset)
 }
 
-func (t *tailer) Stop() {
-	t.mut.Lock()
-	t.stopping = true
-	defer func() {
-		t.stopping = false
-	}()
-
-	var err error
-	// Stop the underlying tailer to prevent resource leak.
-	if t.tail != nil {
-		// Save the current position before shutting down tailer to ensure that if the file is tailed again
-		// it start where it left off.
-		err = t.markPositionAndSize()
-		if err != nil {
-			level.Error(t.logger).Log("msg", "error marking file position when stopping tailer", "path", t.path, "error", err)
-		}
-		err = t.tail.Stop()
-	}
-	t.mut.Unlock()
-
-	if err != nil {
-		if utils.IsEphemeralOrFileClosed(err) {
-			// Don't log as error if the file is already closed, or we got an ephemeral error - it's a common case
-			// when files are rotating while being read and the tailer would have stopped correctly anyway.
-			level.Debug(t.logger).Log("msg", "tailer stopped with file I/O error", "path", t.path, "error", err)
-		} else {
-			// Log as error for other reasons, as a resource leak may have happened.
-			level.Error(t.logger).Log("msg", "error stopping tailer", "path", t.path, "error", err)
-		}
-	}
-	level.Debug(t.logger).Log("msg", "waiting for readline and position marker to exit", "path", t.path)
-	if t.done != nil {
-		// Wait for readLines() to consume all the remaining messages and exit when the channel is closed
-		<-t.done
-		t.done = nil
-	}
-	if t.posdone != nil {
-		// Wait for the position marker thread to exit
-		<-t.posdone
-		t.posdone = nil
-		t.posquit = nil
-	}
-	level.Info(t.logger).Log("msg", "stopped tailing file", "path", t.path)
-
-	// If the component is not stopping, then it means that the target for this component is gone and that
-	// we should clear the entry from the positions file.
-	if !t.componentStopping() {
-		t.positions.Remove(t.path, t.labelsStr)
-	}
+func (t *tailer) Key() positions.Entry {
+	return t.key
 }
 
-func (t *tailer) IsRunning() bool {
-	return t.running.Load()
-}
-
-func (t *tailer) convertToUTF8(text string) (string, error) {
-	res, _, err := transform.String(t.decoder, text)
-	if err != nil {
-		return "", fmt.Errorf("failed to decode text to UTF8: %w", err)
-	}
-
-	return res, nil
+func (t *tailer) shouldKeepPosition() bool {
+	// NOTE: We want to keep position if component is stopping or decompression is enabled.
+	// If component is not stopping that means that target is gone and we should no longer tail the file.
+	// If decompression is enabled we read file until we reach EOF and stop so tailer will exit, but we need
+	// to remember the position so that we don't re-ingest it on restart.
+	return t.componentStopping() || t.decompression.Enabled
 }
 
 // cleanupMetrics removes all metrics exported by this tailer
 func (t *tailer) cleanupMetrics() {
 	// When we stop tailing the file, also un-export metrics related to the file
 	t.metrics.filesActive.Add(-1.)
-	t.metrics.readLines.DeleteLabelValues(t.path)
-	t.metrics.readBytes.DeleteLabelValues(t.path)
-	t.metrics.totalBytes.DeleteLabelValues(t.path)
+	t.metrics.readLines.DeleteLabelValues(t.key.Path)
+	t.metrics.readBytes.DeleteLabelValues(t.key.Path)
+	t.metrics.totalBytes.DeleteLabelValues(t.key.Path)
 }
 
-func (t *tailer) Path() string {
-	return t.path
+func (t *tailer) DebugInfo() any {
+	offset, _ := t.positions.Get(t.key.Path, t.key.Labels)
+	return sourceDebugInfo{
+		Path:       t.key.Path,
+		Labels:     t.key.Labels,
+		IsRunning:  t.running.Load(),
+		ReadOffset: offset,
+	}
 }

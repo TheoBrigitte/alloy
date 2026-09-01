@@ -2,9 +2,11 @@ package receiver
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,21 +15,23 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"time"
 
-	"github.com/go-kit/log"
 	"github.com/go-sourcemap/sourcemap"
-	"github.com/grafana/alloy/internal/component/faro/receiver/internal/payload"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
-	"github.com/grafana/alloy/internal/util"
-	"github.com/grafana/alloy/internal/util/wildcard"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/vincent-petithory/dataurl"
+
+	"github.com/grafana/alloy/internal/component/faro/receiver/internal/payload"
+	"github.com/grafana/alloy/internal/util"
+	"github.com/grafana/alloy/internal/util/wildcard"
 )
 
 // sourceMapsStore is an interface for a sourcemap service capable of
 // transforming minified source locations to the original source location.
 type sourceMapsStore interface {
 	GetSourceMap(sourceURL string, release string) (*sourcemap.Consumer, error)
+	Start()
+	Stop()
 }
 
 // Stub interfaces for easier mocking.
@@ -46,7 +50,7 @@ type (
 type osFileService struct{}
 
 func (fs osFileService) ValidateFilePath(name string) (string, error) {
-	if strings.Contains(name, "/") || strings.Contains(name, "\\") || strings.Contains(name, "..") {
+	if strings.Contains(name, "..") {
 		return "", fmt.Errorf("invalid file name: %s", name)
 	}
 	return name, nil
@@ -67,14 +71,14 @@ func (fs osFileService) ReadFile(name string) ([]byte, error) {
 }
 
 type sourceMapMetrics struct {
-	cacheSize *prometheus.CounterVec
+	cacheSize *prometheus.GaugeVec
 	downloads *prometheus.CounterVec
 	fileReads *prometheus.CounterVec
 }
 
 func newSourceMapMetrics(reg prometheus.Registerer) *sourceMapMetrics {
 	m := &sourceMapMetrics{
-		cacheSize: prometheus.NewCounterVec(prometheus.CounterOpts{
+		cacheSize: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "faro_receiver_sourcemap_cache_size",
 			Help: "number of items in source map cache, per origin",
 		}, []string{"origin"}),
@@ -88,7 +92,7 @@ func newSourceMapMetrics(reg prometheus.Registerer) *sourceMapMetrics {
 		}, []string{"origin", "status"}),
 	}
 
-	m.cacheSize = util.MustRegisterOrGet(reg, m.cacheSize).(*prometheus.CounterVec)
+	m.cacheSize = util.MustRegisterOrGet(reg, m.cacheSize).(*prometheus.GaugeVec)
 	m.downloads = util.MustRegisterOrGet(reg, m.downloads).(*prometheus.CounterVec)
 	m.fileReads = util.MustRegisterOrGet(reg, m.fileReads).(*prometheus.CounterVec)
 	return m
@@ -99,22 +103,42 @@ type sourcemapFileLocation struct {
 	pathTemplate *template.Template
 }
 
+type timeSource interface {
+	Now() time.Time
+}
+
+type realTimeSource struct{}
+
+func (realTimeSource) Now() time.Time {
+	return time.Now()
+}
+
 type sourceMapsStoreImpl struct {
-	log     log.Logger
+	log     *slog.Logger
 	cli     httpClient
 	fs      fileService
 	args    SourceMapsArguments
 	metrics *sourceMapMetrics
 	locs    []*sourcemapFileLocation
 
-	cacheMut sync.Mutex
-	cache    map[string]*sourcemap.Consumer
+	cacheMut      sync.Mutex
+	cache         map[string]*cachedSourceMap
+	timeSource    timeSource
+	cleanupCtx    context.Context
+	cleanupCancel context.CancelFunc
+	cleanupWg     sync.WaitGroup
+	isStarted     bool
+}
+
+type cachedSourceMap struct {
+	consumer *sourcemap.Consumer
+	lastUsed time.Time
 }
 
 // newSourceMapStore creates an implementation of sourceMapsStore. The returned
 // implementation is not dynamically updatable; create a new sourceMapsStore
 // implementation if arguments change.
-func newSourceMapsStore(log log.Logger, args SourceMapsArguments, metrics *sourceMapMetrics, cli httpClient, fs fileService) *sourceMapsStoreImpl {
+func newSourceMapsStore(log *slog.Logger, args SourceMapsArguments, metrics *sourceMapMetrics, cli httpClient, fs fileService) *sourceMapsStoreImpl {
 	// TODO(rfratto): it would be nice for this to be dynamically updatable, but
 	// that will require swapping out the http client (when the timeout changes)
 	// or to find a way to inject a download timeout without modifying the http
@@ -141,27 +165,28 @@ func newSourceMapsStore(log log.Logger, args SourceMapsArguments, metrics *sourc
 	}
 
 	return &sourceMapsStoreImpl{
-		log:     log,
-		cli:     cli,
-		fs:      fs,
-		args:    args,
-		cache:   make(map[string]*sourcemap.Consumer),
-		metrics: metrics,
-		locs:    locs,
+		log:        log,
+		cli:        cli,
+		fs:         fs,
+		args:       args,
+		cache:      make(map[string]*cachedSourceMap),
+		metrics:    metrics,
+		locs:       locs,
+		timeSource: realTimeSource{},
 	}
 }
 
 func (store *sourceMapsStoreImpl) GetSourceMap(sourceURL string, release string) (*sourcemap.Consumer, error) {
-	// TODO(rfratto): GetSourceMap is weak to transient errors, since it always
-	// caches the result, even when there's an error. This means that transient
-	// errors will be cached forever, preventing source maps from being retrieved.
-
 	store.cacheMut.Lock()
 	defer store.cacheMut.Unlock()
 
 	cacheKey := fmt.Sprintf("%s__%s", sourceURL, release)
-	if sm, ok := store.cache[cacheKey]; ok {
-		return sm, nil
+	if cached, ok := store.cache[cacheKey]; ok {
+		if cached != nil {
+			cached.lastUsed = store.timeSource.Now()
+			return cached.consumer, nil
+		}
+		return nil, nil
 	}
 
 	content, sourceMapURL, err := store.getSourceMapContent(sourceURL, release)
@@ -173,26 +198,144 @@ func (store *sourceMapsStoreImpl) GetSourceMap(sourceURL string, release string)
 	consumer, err := sourcemap.Parse(sourceMapURL, content)
 	if err != nil {
 		store.cache[cacheKey] = nil
-		level.Debug(store.log).Log("msg", "failed to parse source map", "url", sourceMapURL, "release", release, "err", err)
+		store.log.Debug("failed to parse source map", "url", sourceMapURL, "release", release, "err", err)
 		return nil, err
 	}
-	level.Info(store.log).Log("msg", "successfully parsed source map", "url", sourceMapURL, "release", release)
-	store.cache[cacheKey] = consumer
+	store.log.Info("successfully parsed source map", "url", sourceMapURL, "release", release)
+	store.cache[cacheKey] = &cachedSourceMap{
+		consumer: consumer,
+		lastUsed: store.timeSource.Now(),
+	}
 	store.metrics.cacheSize.WithLabelValues(getOrigin(sourceURL)).Inc()
 	return consumer, nil
+}
+
+func (store *sourceMapsStoreImpl) CleanOldCacheEntries() {
+	store.cacheMut.Lock()
+	defer store.cacheMut.Unlock()
+
+	ttl := store.args.Cache.TTL
+	for key, cached := range store.cache {
+		if cached != nil && cached.lastUsed.Before(store.timeSource.Now().Add(-ttl)) {
+			srcUrl := strings.SplitN(key, "__", 2)[0]
+			origin := getOrigin(srcUrl)
+			store.metrics.cacheSize.WithLabelValues(origin).Dec()
+			delete(store.cache, key)
+		}
+	}
+}
+
+func (store *sourceMapsStoreImpl) CleanCachedErrors() {
+	store.cacheMut.Lock()
+	defer store.cacheMut.Unlock()
+
+	for key, cached := range store.cache {
+		if cached == nil {
+			delete(store.cache, key)
+		}
+	}
+}
+
+// Start begins the cleanup routines based on configured cache intervals.
+func (store *sourceMapsStoreImpl) Start() {
+	store.cacheMut.Lock()
+	defer store.cacheMut.Unlock()
+
+	if store.isStarted {
+		return
+	}
+	store.isStarted = true
+
+	cacheConfig := store.args.Cache
+	if cacheConfig == nil {
+		return
+	}
+
+	store.cleanupCtx, store.cleanupCancel = context.WithCancel(context.Background())
+
+	if d := cacheConfig.CleanupCheckInterval; d > 0 {
+		store.cleanupWg.Add(1)
+		go func(interval time.Duration) {
+			defer store.cleanupWg.Done()
+			store.CleanOldCacheEntries()
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-store.cleanupCtx.Done():
+					return
+				case <-ticker.C:
+					store.CleanOldCacheEntries()
+				}
+			}
+		}(d)
+	}
+
+	if d := cacheConfig.ErrorCleanupInterval; d > 0 {
+		store.cleanupWg.Add(1)
+		go func(interval time.Duration) {
+			defer store.cleanupWg.Done()
+			store.CleanCachedErrors()
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-store.cleanupCtx.Done():
+					return
+				case <-ticker.C:
+					store.CleanCachedErrors()
+				}
+			}
+		}(d)
+	}
+}
+
+// Stop terminates all cleanup goroutines and waits for them to finish.
+func (store *sourceMapsStoreImpl) Stop() {
+	store.cacheMut.Lock()
+	defer store.cacheMut.Unlock()
+
+	if !store.isStarted {
+		return
+	}
+	store.isStarted = false
+
+	if store.cleanupCancel != nil {
+		store.cleanupCancel()
+		store.cleanupCancel = nil
+	}
+
+	store.cleanupWg.Wait()
+	store.cleanupCtx = nil
 }
 
 func (store *sourceMapsStoreImpl) getSourceMapContent(sourceURL string, release string) (content []byte, sourceMapURL string, err error) {
 	// Attempt to find the source map in the filesystem first.
 	for _, loc := range store.locs {
+		if hasHttpPrefix(loc.Path) {
+			continue
+		}
+
 		content, sourceMapURL, err = store.getSourceMapFromFileSystem(sourceURL, release, loc)
 		if content != nil || err != nil {
 			return content, sourceMapURL, err
 		}
 	}
 
+	// Attempt to find the source map in the remote locations.
+	for _, loc := range store.locs {
+		if !(hasHttpPrefix(loc.Path)) {
+			continue
+		}
+
+		content, sourceMapURL, err = store.getSourceMapFromRemote(sourceURL, release, loc)
+		if content != nil || err != nil {
+			return content, sourceMapURL, err
+		}
+	}
+
 	// Attempt to download the sourcemap if enabled.
-	if strings.HasPrefix(sourceURL, "http") && urlMatchesOrigins(sourceURL, store.args.DownloadFromOrigins) && store.args.Download {
+	if store.args.Download && hasHttpPrefix(sourceURL) && urlMatchesOrigins(sourceURL, store.args.DownloadFromOrigins) {
 		return store.downloadSourceMapContent(sourceURL)
 	}
 	return nil, "", nil
@@ -221,16 +364,16 @@ func (store *sourceMapsStoreImpl) getSourceMapFromFileSystem(sourceURL string, r
 	validMapFilePath, err := store.fs.ValidateFilePath(mapFilePath)
 	if err != nil {
 		store.metrics.fileReads.WithLabelValues(getOrigin(sourceURL), "invalid_path").Inc()
-		level.Debug(store.log).Log("msg", "source map path contains invalid characters", "url", sourceURL, "file_path", mapFilePath)
+		store.log.Debug("source map path contains invalid characters", "url", sourceURL, "file_path", mapFilePath)
 		return nil, "", err
 	}
 
 	if _, err := store.fs.Stat(validMapFilePath); err != nil {
 		store.metrics.fileReads.WithLabelValues(getOrigin(sourceURL), "not_found").Inc()
-		level.Debug(store.log).Log("msg", "source map not found on filesystem", "url", sourceURL, "file_path", validMapFilePath)
+		store.log.Debug("source map not found on filesystem", "url", sourceURL, "file_path", validMapFilePath)
 		return nil, "", nil
 	}
-	level.Debug(store.log).Log("msg", "source map found on filesystem", "url", sourceURL, "file_path", validMapFilePath)
+	store.log.Debug("source map found on filesystem", "url", sourceURL, "file_path", validMapFilePath)
 
 	content, err = store.fs.ReadFile(validMapFilePath)
 	if err != nil {
@@ -242,18 +385,46 @@ func (store *sourceMapsStoreImpl) getSourceMapFromFileSystem(sourceURL string, r
 	return content, sourceURL, err
 }
 
+func (store *sourceMapsStoreImpl) getSourceMapFromRemote(sourceURL string, release string, loc *sourcemapFileLocation) (content []byte, sourceMapURL string, err error) {
+	if len(sourceURL) == 0 || !strings.HasPrefix(sourceURL, loc.MinifiedPathPrefix) || strings.HasSuffix(sourceURL, "/") {
+		return nil, "", nil
+	}
+
+	var rootPath bytes.Buffer
+
+	err = loc.pathTemplate.Execute(&rootPath, struct{ Release string }{Release: cleanFilePathPart(release)})
+	if err != nil {
+		return nil, "", err
+	}
+
+	subPath := strings.TrimPrefix(strings.Split(sourceURL, "?")[0], loc.MinifiedPathPrefix) + ".map"
+	mapURL, err := url.JoinPath(rootPath.String(), subPath)
+	if err != nil {
+		store.log.Debug("failed to construct sourcemap url for remote location", "base_path", rootPath, "sub_path", subPath, "err", err)
+		return nil, "", err
+	}
+
+	content, err = store.downloadFileContents(mapURL)
+	if err != nil {
+		store.log.Debug("failed to download sourcemap file from remote location", "url", mapURL, "err", err)
+		return nil, "", err
+	}
+
+	return content, sourceURL, err
+}
+
 func (store *sourceMapsStoreImpl) downloadSourceMapContent(sourceURL string) (content []byte, resolvedSourceMapURL string, err error) {
-	level.Debug(store.log).Log("msg", "attempting to download source file", "url", sourceURL)
+	store.log.Debug("attempting to download source file", "url", sourceURL)
 
 	result, err := store.downloadFileContents(sourceURL)
 	if err != nil {
-		level.Debug(store.log).Log("msg", "failed to download source file", "url", sourceURL, "err", err)
+		store.log.Debug("failed to download source file", "url", sourceURL, "err", err)
 		return nil, "", err
 	}
 
 	match := reSourceMap.FindAllStringSubmatch(string(result), -1)
 	if len(match) == 0 {
-		level.Debug(store.log).Log("msg", "no source map url found in source", "url", sourceURL)
+		store.log.Debug("no source map url found in source", "url", sourceURL)
 		return nil, "", nil
 	}
 	sourceMapURL := match[len(match)-1][2]
@@ -262,11 +433,11 @@ func (store *sourceMapsStoreImpl) downloadSourceMapContent(sourceURL string) (co
 	if strings.HasPrefix(sourceMapURL, "data:") {
 		dataURL, err := dataurl.DecodeString(sourceMapURL)
 		if err != nil {
-			level.Debug(store.log).Log("msg", "failed to parse inline source map data url", "url", sourceURL, "err", err)
+			store.log.Debug("failed to parse inline source map data url", "url", sourceURL, "err", err)
 			return nil, "", err
 		}
 
-		level.Info(store.log).Log("msg", "successfully parsed inline source map data url", "url", sourceURL)
+		store.log.Info("successfully parsed inline source map data url", "url", sourceURL)
 		return dataURL.Data, sourceURL + ".map", nil
 	}
 	// Remote sourcemap
@@ -276,23 +447,23 @@ func (store *sourceMapsStoreImpl) downloadSourceMapContent(sourceURL string) (co
 	if !strings.HasPrefix(resolvedSourceMapURL, "http") {
 		base, err := url.Parse(sourceURL)
 		if err != nil {
-			level.Debug(store.log).Log("msg", "failed to parse source URL", "url", sourceURL, "err", err)
+			store.log.Debug("failed to parse source URL", "url", sourceURL, "err", err)
 			return nil, "", err
 		}
 		relative, err := url.Parse(sourceMapURL)
 		if err != nil {
-			level.Debug(store.log).Log("msg", "failed to parse source map URL", "url", sourceURL, "sourceMapURL", sourceMapURL, "err", err)
+			store.log.Debug("failed to parse source map URL", "url", sourceURL, "sourceMapURL", sourceMapURL, "err", err)
 			return nil, "", err
 		}
 
 		resolvedSourceMapURL = base.ResolveReference(relative).String()
-		level.Debug(store.log).Log("msg", "resolved absolute source map URL", "url", sourceURL, "sourceMapURL", sourceMapURL)
+		store.log.Debug("resolved absolute source map URL", "url", sourceURL, "sourceMapURL", sourceMapURL)
 	}
 
-	level.Debug(store.log).Log("msg", "attempting to download source map file", "url", resolvedSourceMapURL)
+	store.log.Debug("attempting to download source map file", "url", resolvedSourceMapURL)
 	result, err = store.downloadFileContents(resolvedSourceMapURL)
 	if err != nil {
-		level.Debug(store.log).Log("msg", "failed to download source map file", "url", resolvedSourceMapURL, "err", err)
+		store.log.Debug("failed to download source map file", "url", resolvedSourceMapURL, "err", err)
 		return nil, "", err
 	}
 
@@ -341,11 +512,15 @@ func urlMatchesOrigins(URL string, origins []string) bool {
 	return false
 }
 
+func hasHttpPrefix(URL string) bool {
+	return strings.HasPrefix(URL, "http://") || strings.HasPrefix(URL, "https://")
+}
+
 func cleanFilePathPart(x string) string {
 	return strings.TrimLeft(strings.ReplaceAll(strings.ReplaceAll(x, "\\", ""), "/", ""), ".")
 }
 
-func transformException(log log.Logger, store sourceMapsStore, ex *payload.Exception, release string) *payload.Exception {
+func transformException(log *slog.Logger, store sourceMapsStore, ex *payload.Exception, release string) *payload.Exception {
 	if ex.Stacktrace == nil {
 		return ex
 	}
@@ -354,7 +529,7 @@ func transformException(log log.Logger, store sourceMapsStore, ex *payload.Excep
 	for _, frame := range ex.Stacktrace.Frames {
 		mappedFrame, err := resolveSourceLocation(store, &frame, release)
 		if err != nil {
-			level.Error(log).Log("msg", "Error resolving stack trace frame source location", "err", err)
+			log.Error("Error resolving stack trace frame source location", "err", err)
 			frames = append(frames, frame)
 		} else if mappedFrame != nil {
 			frames = append(frames, *mappedFrame)
@@ -369,6 +544,7 @@ func transformException(log log.Logger, store sourceMapsStore, ex *payload.Excep
 		Stacktrace: &payload.Stacktrace{Frames: frames},
 		Timestamp:  ex.Timestamp,
 		Context:    ex.Context,
+		Trace:      ex.Trace,
 	}
 }
 

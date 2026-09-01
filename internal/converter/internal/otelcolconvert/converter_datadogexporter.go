@@ -1,4 +1,4 @@
-//go:build !freebsd
+//go:build !freebsd && !openbsd
 
 package otelcolconvert
 
@@ -35,10 +35,11 @@ func (datadogExporterConverter) ConvertAndAppend(state *State, id componentstatu
 	var diags diag.Diagnostics
 
 	label := state.AlloyComponentLabel()
-	overrideHook := func(val interface{}) interface{} {
+	overrideHook := func(val any) any {
 		switch val.(type) {
 		case extension.ExtensionHandler:
-			ext := state.LookupExtension(*cfg.(*datadogOtelconfig.Config).QueueSettings.StorageID)
+			queue := cfg.(*datadogOtelconfig.Config).QueueSettings.GetOrInsertDefault()
+			ext := state.LookupExtension(*queue.StorageID)
 			return common.CustomTokenizer{Expr: fmt.Sprintf("%s.%s.handler", strings.Join(ext.Name, "."), ext.Label)}
 		}
 		return common.GetAlloyTypesOverrideHook()(val)
@@ -58,17 +59,18 @@ func (datadogExporterConverter) ConvertAndAppend(state *State, id componentstatu
 
 func toDatadogExporter(cfg *datadogOtelconfig.Config) *datadog.Arguments {
 	return &datadog.Arguments{
-		Client:       toDatadogHTTPClientArguments(cfg.ClientConfig),
-		Retry:        toRetryArguments(cfg.BackOffConfig),
-		Queue:        toQueueArguments(cfg.QueueSettings),
-		APISettings:  toDatadogAPIArguments(cfg.API),
-		Traces:       toDatadogTracesArguments(cfg.Traces),
-		Metrics:      toDatadogMetricsArguments(cfg.Metrics),
-		Logs:         toDatadogLogsArguments(cfg.Logs),
-		HostMetadata: toDatadogHostMetadataArguments(cfg.HostMetadata),
-		OnlyMetadata: cfg.OnlyMetadata,
-		Hostname:     cfg.Hostname,
-		DebugMetrics: common.DefaultValue[datadog.Arguments]().DebugMetrics,
+		Client:                   toDatadogHTTPClientArguments(cfg.ClientConfig),
+		Retry:                    toRetryArguments(cfg.BackOffConfig),
+		Queue:                    toQueueArguments(cfg.QueueSettings),
+		APISettings:              toDatadogAPIArguments(cfg.API),
+		Traces:                   toDatadogTracesArguments(cfg.Traces),
+		Metrics:                  toDatadogMetricsArguments(cfg.Metrics),
+		Logs:                     toDatadogLogsArguments(cfg.Logs),
+		HostMetadata:             toDatadogHostMetadataArguments(cfg.HostMetadata),
+		OnlyMetadata:             cfg.OnlyMetadata,
+		HostnameDetectionTimeout: cfg.HostnameDetectionTimeout,
+		Hostname:                 cfg.Hostname,
+		DebugMetrics:             common.DefaultValue[datadog.Arguments]().DebugMetrics,
 	}
 }
 
@@ -82,7 +84,7 @@ func toDatadogHTTPClientArguments(cfg confighttp.ClientConfig) datadog_config.Da
 		MaxConnsPerHost:     cfg.MaxConnsPerHost,
 		IdleConnTimeout:     cfg.IdleConnTimeout,
 		DisableKeepAlives:   cfg.DisableKeepAlives,
-		InsecureSkipVerify:  cfg.TLSSetting.Insecure,
+		InsecureSkipVerify:  cfg.TLS.Insecure,
 	}
 }
 

@@ -124,6 +124,7 @@ func TestUnmarshal(t *testing.T) {
 	include_file_record_number = true
 	compression                = "gzip"
 	acquire_fs_lock            = true
+	file_cache_advise          = true
 
 	header {
 		pattern = "^HEADER .*$"
@@ -212,7 +213,7 @@ func TestValidate(t *testing.T) {
 	var args filelog.Arguments
 	err := syntax.Unmarshal([]byte(alloyCfg), &args)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "error decoding 'parse_from': unrecognized prefix")
+	require.Contains(t, err.Error(), "'parse_from' unrecognized prefix")
 	require.Contains(t, err.Error(), "'max_concurrent_files' must be positive")
 	require.Contains(t, err.Error(), "'max_batches' must not be negative")
 	require.Contains(t, err.Error(), "invalid 'encoding': unsupported encoding 'webdings'")

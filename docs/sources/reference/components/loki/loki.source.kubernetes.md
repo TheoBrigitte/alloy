@@ -5,6 +5,8 @@ aliases:
 description: Learn about loki.source.kubernetes
 labels:
   stage: general-availability
+  products:
+    - oss
 title: loki.source.kubernetes
 ---
 
@@ -47,7 +49,7 @@ You can use the following arguments with `loki.source.kubernetes`:
 | Name         | Type                 | Description                               | Default | Required |
 | ------------ | -------------------- | ----------------------------------------- | ------- | -------- |
 | `forward_to` | `list(LogsReceiver)` | List of receivers to send log entries to. |         | yes      |
-| `targets`    | `list(map(string))`  | List of files to read from.               |         | yes      |
+| `targets`    | `list(map(string))`  | List of targets to tail logs from.        |         | yes      |
 
 Each target in `targets` must have the following labels:
 
@@ -65,6 +67,8 @@ Log tailers reconnect with exponential backoff to Kubernetes if the log stream r
 
 You can use the following blocks with `loki.source.kubernetes`:
 
+{{< docs/alloy-config >}}
+
 | Block                                            | Description                                                                                 | Required |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------- | -------- |
 | [`client`][client]                               | Configures Kubernetes client used to tail logs.                                             | no       |
@@ -75,15 +79,14 @@ You can use the following blocks with `loki.source.kubernetes`:
 | `client` > [`tls_config`][tls_config]            | Configure TLS settings for connecting to the endpoint.                                      | no       |
 | [`clustering`][clustering]                       | Configure the component for when {{< param "PRODUCT_NAME" >}} is running in clustered mode. | no       |
 
-The > symbol indicates deeper levels of nesting.
-For example, `client` > `basic_auth` refers to a `basic_auth` block defined inside a `client` block.
-
 [client]: #client
 [authorization]: #authorization
 [basic_auth]: #basic_auth
 [clustering]: #clustering
 [oauth2]: #oauth2
 [tls_config]: #tls_config
+
+{{< /docs/alloy-config >}}
 
 ### `client`
 
@@ -99,7 +102,7 @@ The following arguments are supported:
 | `bearer_token`           | `secret`            | Bearer token to authenticate with.                                                               |         | no       |
 | `enable_http2`           | `bool`              | Whether HTTP2 is supported for requests.                                                         | `true`  | no       |
 | `follow_redirects`       | `bool`              | Whether redirects returned by the server should be followed.                                     | `true`  | no       |
-| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |                      | no       |
+| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |         | no       |
 | `kubeconfig_file`        | `string`            | Path of the `kubeconfig` file to use for connecting to Kubernetes.                               |         | no       |
 | `no_proxy`               | `string`            | Comma-separated list of IP addresses, CIDR notations, and domain names to exclude from proxying. |         | no       |
 | `proxy_connect_header`   | `map(list(secret))` | Specifies headers to send to proxies during CONNECT requests.                                    |         | no       |
@@ -108,11 +111,11 @@ The following arguments are supported:
 
  At most, one of the following can be provided:
 
-* [`authorization`][authorization] block
-* [`basic_auth`][basic_auth] block
-* [`bearer_token_file`][client] argument
-* [`bearer_token`][client] argument
-* [`oauth2`][oauth2] block
+* [`authorization`](#authorization) block
+* [`basic_auth`](#basic_auth) block
+* [`bearer_token_file`](#client) argument
+* [`bearer_token`](#client) argument
+* [`oauth2`](#oauth2) block
 
 {{< docs/shared lookup="reference/components/http-client-proxy-config-description.md" source="alloy" version="<ALLOY_VERSION>" >}}
 

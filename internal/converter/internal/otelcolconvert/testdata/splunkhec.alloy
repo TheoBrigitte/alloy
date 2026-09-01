@@ -1,17 +1,19 @@
-otelcol.receiver.otlp "default" {
-	grpc {
-		endpoint = "localhost:4317"
-	}
+otelcol.receiver.splunkhec "default" {
+	idle_timeout        = "0s"
+	write_timeout       = "20s"
+	read_header_timeout = "20s"
+	raw_path            = "/raw"
 
-	http {
-		endpoint               = "localhost:4318"
-		compression_algorithms = ["zlib"]
+	hec_metadata_to_otel_attrs {
+		source     = "mysource"
+		sourcetype = "mysourcetype"
+		index      = "myindex"
+		host       = "myhost"
 	}
 
 	output {
 		metrics = [otelcol.exporter.splunkhec.default.input]
 		logs    = [otelcol.exporter.splunkhec.default.input]
-		traces  = [otelcol.exporter.splunkhec.default.input]
 	}
 }
 
@@ -52,5 +54,12 @@ otelcol.exporter.splunkhec "default" {
 				dataset_name = "SplunkCloudBeaverStack",
 			}
 		}
+	}
+
+	otel_attrs_to_hec_metadata {
+		source     = "mysource"
+		sourcetype = "mysourcetype"
+		index      = "myindex"
+		host       = "myhost"
 	}
 }

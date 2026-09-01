@@ -6,7 +6,7 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
+	"log/slog"
 	"math/rand"
 	"net/http"
 	"path"
@@ -14,27 +14,26 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-kit/log"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/prometheus/prometheus/util/httputil"
+
 	"github.com/grafana/alloy/internal/component"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 	"github.com/grafana/alloy/internal/service"
 	"github.com/grafana/alloy/internal/service/cluster"
 	"github.com/grafana/alloy/internal/service/livedebugging"
 	"github.com/grafana/alloy/internal/service/remotecfg"
-	"github.com/prometheus/prometheus/util/httputil"
 )
 
 // AlloyAPI is a wrapper around the component API.
 type AlloyAPI struct {
 	alloy           service.Host
 	CallbackManager livedebugging.CallbackManager
-	logger          log.Logger
+	logger          *slog.Logger
 }
 
 // NewAlloyAPI instantiates a new Alloy API.
-func NewAlloyAPI(alloy service.Host, CallbackManager livedebugging.CallbackManager, l log.Logger) *AlloyAPI {
+func NewAlloyAPI(alloy service.Host, CallbackManager livedebugging.CallbackManager, l *slog.Logger) *AlloyAPI {
 	return &AlloyAPI{alloy: alloy, CallbackManager: CallbackManager, logger: l}
 }
 
@@ -60,19 +59,6 @@ func (a *AlloyAPI) RegisterRoutes(urlPrefix string, r *mux.Router) {
 	r.Handle(path.Join(urlPrefix, "/graph/{moduleID:.+}"), graph(a.alloy, a.CallbackManager, a.logger))
 }
 
-func getRemoteCfgHost(host service.Host) (service.Host, error) {
-	svc, found := host.GetService(remotecfg.ServiceName)
-	if !found {
-		return nil, fmt.Errorf("remote config service not available")
-	}
-
-	data := svc.Data().(remotecfg.Data)
-	if data.Host == nil {
-		return nil, fmt.Errorf("remote config service startup in progress")
-	}
-	return data.Host, nil
-}
-
 func listComponentsHandler(host service.Host) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		listComponentsHandlerInternal(host, w, r)
@@ -81,7 +67,7 @@ func listComponentsHandler(host service.Host) http.HandlerFunc {
 
 func listComponentsHandlerRemoteCfg(host service.Host) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		remoteCfgHost, err := getRemoteCfgHost(host)
+		remoteCfgHost, err := remotecfg.GetHost(host)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -122,7 +108,7 @@ func getComponentHandler(host service.Host) http.HandlerFunc {
 
 func getComponentHandlerRemoteCfg(host service.Host) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		remoteCfgHost, err := getRemoteCfgHost(host)
+		remoteCfgHost, err := remotecfg.GetHost(host)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -178,7 +164,7 @@ type dataKey struct {
 	Type        livedebugging.DataType
 }
 
-func graph(h service.Host, callbackManager livedebugging.CallbackManager, logger log.Logger) http.HandlerFunc {
+func graph(h service.Host, callbackManager livedebugging.CallbackManager, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var moduleID livedebugging.ModuleID
 		if vars := mux.Vars(r); vars != nil {
@@ -209,7 +195,7 @@ func graph(h service.Host, callbackManager livedebugging.CallbackManager, logger
 				case dataCh <- data:
 				default:
 					if !droppedData {
-						level.Warn(logger).Log("msg", "data throughput is very high, not all debugging data can be sent to the graph")
+						logger.Warn("data throughput is very high, not all debugging data can be sent to the graph")
 						droppedData = true
 					}
 				}
@@ -248,7 +234,7 @@ func graph(h service.Host, callbackManager livedebugging.CallbackManager, logger
 				}
 
 			case <-ticker.C:
-				dataArray := make([]interface{}, 0, len(dataMap))
+				dataArray := make([]any, 0, len(dataMap))
 				for _, data := range dataMap {
 					data.Rate = float64(data.Count) / window.Seconds()
 					dataArray = append(dataArray, data)
@@ -256,14 +242,14 @@ func graph(h service.Host, callbackManager livedebugging.CallbackManager, logger
 
 				jsonData, err := json.Marshal(dataArray)
 				if err != nil {
-					level.Warn(logger).Log("msg", "error marshalling data, not sending data to the graph", "error", err)
+					logger.Warn("error marshalling data, not sending data to the graph", "error", err)
 					continue
 				}
 
 				// Add |;| delimiter to the end of the data to help with parsing when the msg arrives in multiple chunks
 				_, writeErr := w.Write(append(jsonData, []byte("|;|")...))
 				if writeErr != nil {
-					level.Warn(logger).Log("msg", "error writing data to the graph", "error", writeErr)
+					logger.Warn("error writing data to the graph", "error", writeErr)
 					return
 				}
 				w.(http.Flusher).Flush()
@@ -279,7 +265,7 @@ func graph(h service.Host, callbackManager livedebugging.CallbackManager, logger
 	}
 }
 
-func liveDebugging(h service.Host, callbackManager livedebugging.CallbackManager, logger log.Logger) http.HandlerFunc {
+func liveDebugging(h service.Host, callbackManager livedebugging.CallbackManager, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		vars := mux.Vars(r)
 		componentID := livedebugging.ComponentID(vars["id"])
@@ -311,7 +297,7 @@ func liveDebugging(h service.Host, callbackManager livedebugging.CallbackManager
 				case dataCh <- data.DataFunc():
 				default:
 					if !droppedData {
-						level.Warn(logger).Log("msg", "data throughput is very high, not all debugging data can be sent the live debugging stream")
+						logger.Warn("data throughput is very high, not all debugging data can be sent the live debugging stream")
 						droppedData = true
 					}
 				}
@@ -353,7 +339,7 @@ func liveDebugging(h service.Host, callbackManager livedebugging.CallbackManager
 
 func resolveServiceHost(host service.Host, id string) (service.Host, error) {
 	if strings.HasPrefix(id, "remotecfg/") {
-		remoteCfgHost, err := getRemoteCfgHost(host)
+		remoteCfgHost, err := remotecfg.GetHost(host)
 		if err != nil {
 			return nil, err
 		}

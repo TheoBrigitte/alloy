@@ -3,18 +3,18 @@ package stages
 import (
 	"bytes"
 	"errors"
-	"fmt"
+	"log/slog"
 	"reflect"
 	"sort"
 	"time"
 
-	"github.com/go-kit/log"
-	"github.com/grafana/loki/v3/pkg/logqlmodel"
 	json "github.com/json-iterator/go"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
+)
 
-	"github.com/grafana/alloy/internal/runtime/logging/level"
+const (
+	packedEntryKey = "_entry"
 )
 
 // Packed keeps track of the labels and log entry.
@@ -25,7 +25,7 @@ type Packed struct {
 
 // UnmarshalJSON populates a Packed struct where every key except the _entry key is added to the Labels field
 func (w *Packed) UnmarshalJSON(data []byte) error {
-	m := &map[string]interface{}{}
+	m := &map[string]any{}
 	err := json.Unmarshal(data, m)
 	if err != nil {
 		return err
@@ -33,7 +33,7 @@ func (w *Packed) UnmarshalJSON(data []byte) error {
 	w.Labels = map[string]string{}
 	for k, v := range *m {
 		// _entry key goes to the Entry field, everything else becomes a label
-		if k == logqlmodel.PackedEntryKey {
+		if k == packedEntryKey {
 			if s, ok := v.(string); ok {
 				w.Entry = s
 			} else {
@@ -93,7 +93,7 @@ func (w Packed) MarshalJSON() ([]byte, error) {
 		buf.WriteString(",")
 	}
 	// Add the line entry
-	buf.WriteString("\"" + logqlmodel.PackedEntryKey + "\":")
+	buf.WriteString("\"" + packedEntryKey + "\":")
 	buf.Write(b)
 
 	buf.WriteString("}")
@@ -116,18 +116,23 @@ func (p *PackConfig) SetToDefault() {
 	*p = DefaultPackConfig
 }
 
-// newPackStage creates a DropStage from config
-func newPackStage(logger log.Logger, config PackConfig, registerer prometheus.Registerer) Stage {
-	return &packStage{
-		logger:    log.With(logger, "component", "stage", "type", "pack"),
-		cfg:       &config,
-		dropCount: getDropCountMetric(registerer),
+// newPackStage creates a PackStage from config
+func newPackStage(logger *slog.Logger, config PackConfig, registerer prometheus.Registerer) (Stage, error) {
+	dropCount, err := getDropCountMetric(registerer)
+	if err != nil {
+		return nil, err
 	}
+
+	return &packStage{
+		logger:    logger.With("stage", "pack"),
+		cfg:       &config,
+		dropCount: dropCount,
+	}, nil
 }
 
 // packStage applies Label matchers to determine if the include stages should be run
 type packStage struct {
-	logger    log.Logger
+	logger    *slog.Logger
 	cfg       *PackConfig
 	dropCount *prometheus.CounterVec
 }
@@ -154,7 +159,7 @@ func (m *packStage) pack(e Entry) Entry {
 			if lk == wl {
 				sv, err := getString(lv)
 				if err != nil {
-					level.Debug(m.logger).Log("msg", fmt.Sprintf("value for key: '%s' cannot be converted to a string and cannot be packed", lk), "err", err, "type", reflect.TypeOf(lv))
+					m.logger.Debug("value cannot be converted to a string and cannot be packed", "key", lk, "err", err, "type", reflect.TypeOf(lv))
 					continue
 				}
 				packedLabels[wl] = sv
@@ -172,7 +177,7 @@ func (m *packStage) pack(e Entry) Entry {
 	// Marshal to json
 	wl, err := json.Marshal(w)
 	if err != nil {
-		level.Debug(m.logger).Log("msg", "pack stage failed to marshal packed object to json, packing will be skipped", "err", err)
+		m.logger.Debug("pack stage failed to marshal packed object to json, packing will be skipped", "err", err)
 		return e
 	}
 
@@ -192,11 +197,6 @@ func (m *packStage) pack(e Entry) Entry {
 	}
 
 	return e
-}
-
-// Name implements Stage
-func (m *packStage) Name() string {
-	return StageTypePack
 }
 
 // Cleanup implements Stage.

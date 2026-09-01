@@ -10,17 +10,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-kit/log"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/grafana/alloy/internal/component"
 	commonk8s "github.com/grafana/alloy/internal/component/common/kubernetes"
 	"github.com/grafana/alloy/internal/component/common/loki"
-	"github.com/grafana/alloy/internal/component/common/loki/positions"
 	"github.com/grafana/alloy/internal/component/discovery"
+	"github.com/grafana/alloy/internal/component/loki/source/internal/positions"
 	"github.com/grafana/alloy/internal/component/loki/source/kubernetes/kubetail"
 	"github.com/grafana/alloy/internal/featuregate"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 	"github.com/grafana/alloy/internal/service/cluster"
 )
 
@@ -60,20 +58,17 @@ func (args *Arguments) SetToDefault() {
 
 // Component implements the loki.source.kubernetes component.
 type Component struct {
-	log       log.Logger
 	opts      component.Options
 	positions positions.Positions
 	cluster   cluster.Cluster
+
+	fanout  *loki.Fanout
+	handler loki.LogsReceiver
 
 	mut         sync.Mutex
 	args        Arguments
 	tailer      *kubetail.Manager
 	lastOptions *kubetail.Options
-
-	handler loki.LogsReceiver
-
-	receiversMut sync.RWMutex
-	receivers    []loki.LogsReceiver
 }
 
 var (
@@ -104,9 +99,9 @@ func New(o component.Options, args Arguments) (*Component, error) {
 
 	c := &Component{
 		cluster:   data.(cluster.Cluster),
-		log:       o.Logger,
 		opts:      o,
 		handler:   loki.NewLogsReceiver(),
+		fanout:    loki.NewFanout(args.ForwardTo),
 		positions: positionsFile,
 	}
 	if err := c.Update(args); err != nil {
@@ -117,46 +112,33 @@ func New(o component.Options, args Arguments) (*Component, error) {
 
 // Run implements component.Component.
 func (c *Component) Run(ctx context.Context) error {
-	defer c.positions.Stop()
-
 	defer func() {
-		c.mut.Lock()
-		defer c.mut.Unlock()
+		defer c.positions.Stop()
+		loki.Drain(c.handler, c.fanout, loki.DefaultDrainTimeout, func() {
+			c.mut.Lock()
+			defer c.mut.Unlock()
 
-		// Guard for safety, but it's not possible for Run to be called without
-		// c.tailer being initialized.
-		if c.tailer != nil {
-			c.tailer.Stop()
-		}
+			// Guard for safety, but it's not possible for Run to be called without
+			// c.tailer being initialized.
+			if c.tailer != nil {
+				c.tailer.Stop()
+			}
+		})
 	}()
 
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case entry := <-c.handler.Chan():
-			c.receiversMut.RLock()
-			receivers := c.receivers
-			c.receiversMut.RUnlock()
-
-			for _, receiver := range receivers {
-				receiver.Chan() <- entry
-			}
-		}
-	}
+	loki.Consume(ctx, c.handler, c.fanout)
+	return nil
 }
 
 // Update implements component.Component.
 func (c *Component) Update(args component.Arguments) error {
 	newArgs := args.(Arguments)
 
-	// Update the receivers before anything else, just in case something fails.
-	c.receiversMut.Lock()
-	c.receivers = newArgs.ForwardTo
-	c.receiversMut.Unlock()
-
 	c.mut.Lock()
 	defer c.mut.Unlock()
+
+	// Update the receivers before anything else, just in case something fails.
+	c.fanout.UpdateChildren(newArgs.ForwardTo)
 
 	managerOpts, err := c.getTailerOptions(newArgs)
 	if err != nil {
@@ -166,7 +148,7 @@ func (c *Component) Update(args component.Arguments) error {
 	switch {
 	case c.tailer == nil:
 		// First call to Update; build the tailer.
-		c.tailer = kubetail.NewManager(c.log, managerOpts)
+		c.tailer = kubetail.NewManager(c.opts.Logger, managerOpts)
 
 	case managerOpts != c.lastOptions:
 		// Options changed; pass it to the tailer.
@@ -197,10 +179,10 @@ func (c *Component) resyncTargets(targets []discovery.Target) {
 		processed, err := kubetail.PrepareLabels(lset, c.opts.ID)
 		if err != nil {
 			// TODO(rfratto): should this set the health of the component?
-			level.Error(c.log).Log("msg", "failed to process input target", "target", lset.String(), "err", err)
+			c.opts.Logger.Error("failed to process input target", "target", lset.String(), "err", err)
 			continue
 		}
-		tailTargets = append(tailTargets, kubetail.NewTarget(lset, processed))
+		tailTargets = append(tailTargets, kubetail.NewTarget(lset, processed, false))
 	}
 
 	// This will never fail because it only fails if the context gets canceled.
@@ -231,7 +213,7 @@ func (c *Component) getTailerOptions(args Arguments) (*kubetail.Options, error) 
 		return c.lastOptions, nil
 	}
 
-	cfg, err := args.Client.BuildRESTConfig(c.log)
+	cfg, err := args.Client.BuildRESTConfig(c.opts.Logger)
 	if err != nil {
 		return c.lastOptions, fmt.Errorf("building Kubernetes config: %w", err)
 	}
@@ -248,7 +230,7 @@ func (c *Component) getTailerOptions(args Arguments) (*kubetail.Options, error) 
 }
 
 // DebugInfo returns debug information for loki.source.kubernetes.
-func (c *Component) DebugInfo() interface{} {
+func (c *Component) DebugInfo() any {
 	var info DebugInfo
 
 	for _, target := range c.tailer.Targets() {

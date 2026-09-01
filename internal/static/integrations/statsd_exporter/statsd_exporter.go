@@ -4,19 +4,13 @@ package statsd_exporter
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"time"
 
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
-	"github.com/grafana/alloy/internal/build"
-	"github.com/grafana/alloy/internal/static/integrations"
-	"github.com/grafana/alloy/internal/static/integrations/config"
-	integrations_v2 "github.com/grafana/alloy/internal/static/integrations/v2"
-	"github.com/grafana/alloy/internal/static/integrations/v2/metricsutils"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/statsd_exporter/pkg/address"
@@ -29,6 +23,12 @@ import (
 	"github.com/prometheus/statsd_exporter/pkg/mappercache/randomreplacement"
 	"github.com/prometheus/statsd_exporter/pkg/relay"
 	"gopkg.in/yaml.v2"
+
+	"github.com/grafana/alloy/internal/build"
+	"github.com/grafana/alloy/internal/static/integrations"
+	"github.com/grafana/alloy/internal/static/integrations/config"
+	integrations_v2 "github.com/grafana/alloy/internal/static/integrations/v2"
+	"github.com/grafana/alloy/internal/static/integrations/v2/metricsutils"
 )
 
 // DefaultConfig holds the default settings for the statsd_exporter integration.
@@ -76,7 +76,7 @@ type Config struct {
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler for Config.
-func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (c *Config) UnmarshalYAML(unmarshal func(any) error) error {
 	*c = DefaultConfig
 
 	type plain Config
@@ -88,13 +88,12 @@ func (c *Config) Name() string {
 	return "statsd_exporter"
 }
 
-// InstanceKey returns the hostname:port of the agent.
-func (c *Config) InstanceKey(agentKey string) (string, error) {
-	return agentKey, nil
+func (c *Config) InstanceKey(defaultKey string) (string, error) {
+	return defaultKey, nil
 }
 
 // NewIntegration converts this config into an instance of an integration.
-func (c *Config) NewIntegration(l log.Logger) (integrations.Integration, error) {
+func (c *Config) NewIntegration(l *slog.Logger) (integrations.Integration, error) {
 	return New(l, c)
 }
 
@@ -109,12 +108,12 @@ type Exporter struct {
 	reg      *prometheus.Registry
 	metrics  *Metrics
 	exporter *exporter.Exporter
-	log      log.Logger
+	log      *slog.Logger
 }
 
 // New creates a new statsd_exporter integration. The integration scrapes
 // metrics from a statsd process.
-func New(log log.Logger, c *Config) (integrations.Integration, error) {
+func New(l *slog.Logger, c *Config) (integrations.Integration, error) {
 	reg := prometheus.NewRegistry()
 
 	m, err := NewMetrics(reg)
@@ -125,10 +124,11 @@ func New(log log.Logger, c *Config) (integrations.Integration, error) {
 	if c.ListenUDP == "" && c.ListenTCP == "" && c.ListenUnixgram == "" {
 		return nil, fmt.Errorf("at least one of UDP/TCP/Unixgram listeners must be used")
 	}
+
 	statsdMapper := &mapper.MetricMapper{
 		Registerer:    reg,
 		MappingsCount: m.MappingsCount,
-		Logger:        log,
+		Logger:        l,
 	}
 
 	if c.MappingConfig != nil {
@@ -161,7 +161,7 @@ func New(log log.Logger, c *Config) (integrations.Integration, error) {
 		statsdMapper.UseCache(cache)
 	}
 
-	e := exporter.NewExporter(reg, statsdMapper, log, m.EventsActions, m.EventsUnmapped, m.ErrorEventStats, m.EventStats, m.ConflictingEventStats, m.MetricsCount)
+	e := exporter.NewExporter(reg, statsdMapper, l, m.EventsActions, m.EventsUnmapped, m.ErrorEventStats, m.EventStats, m.ConflictingEventStats, m.MetricsCount)
 
 	if err := reg.Register(build.NewCollector("statsd_exporter")); err != nil {
 		return nil, fmt.Errorf("couldn't register version metrics: %w", err)
@@ -172,7 +172,7 @@ func New(log log.Logger, c *Config) (integrations.Integration, error) {
 		metrics:  m,
 		exporter: e,
 		reg:      reg,
-		log:      log,
+		log:      l,
 	}, nil
 }
 
@@ -229,7 +229,7 @@ func (e *Exporter) Run(ctx context.Context) error {
 		defer func() {
 			err := uconn.Close()
 			if err != nil {
-				level.Warn(e.log).Log("msg", "failed to close UDP listener", "err", err)
+				e.log.Warn("failed to close UDP listener", "err", err)
 			}
 		}()
 
@@ -247,12 +247,14 @@ func (e *Exporter) Run(ctx context.Context) error {
 			Logger:          e.log,
 			LineParser:      parser,
 			UDPPackets:      e.metrics.UDPPackets,
+			UDPPacketDrops:  e.metrics.UDPPacketDrops,
 			LinesReceived:   e.metrics.LinesReceived,
 			EventsFlushed:   e.metrics.EventsFlushed,
 			SampleErrors:    *e.metrics.SampleErrors,
 			SamplesReceived: e.metrics.SamplesReceived,
 			TagErrors:       e.metrics.TagErrors,
 			TagsReceived:    e.metrics.TagsReceived,
+			UdpPacketQueue:  make(chan []byte, 1000),
 		}
 
 		go ul.Listen()
@@ -270,7 +272,7 @@ func (e *Exporter) Run(ctx context.Context) error {
 		defer func() {
 			err := tconn.Close()
 			if err != nil {
-				level.Warn(e.log).Log("msg", "failed to close TCP listener", "err", err)
+				e.log.Warn("failed to close TCP listener", "err", err)
 			}
 		}()
 
@@ -309,7 +311,7 @@ func (e *Exporter) Run(ctx context.Context) error {
 		defer func() {
 			err := uxgconn.Close()
 			if err != nil {
-				level.Warn(e.log).Log("msg", "failed to close unixgram listener", "err", err)
+				e.log.Warn("failed to close unixgram listener", "err", err)
 			}
 		}()
 
@@ -345,11 +347,11 @@ func (e *Exporter) Run(ctx context.Context) error {
 			// Convert the string to octet
 			perm, err := strconv.ParseInt("0"+e.cfg.UnixSocketMode, 8, 32)
 			if err != nil {
-				level.Warn(e.log).Log("msg", "bad permission on unixgram socket, ignoring", "permission", e.cfg.UnixSocketMode, "socket", e.cfg.ListenUnixgram, "err", err)
+				e.log.Warn("bad permission on unixgram socket, ignoring", "permission", e.cfg.UnixSocketMode, "socket", e.cfg.ListenUnixgram, "err", err)
 			} else {
 				err = os.Chmod(e.cfg.ListenUnixgram, os.FileMode(perm))
 				if err != nil {
-					level.Warn(e.log).Log("msg", "failed to change unixgram socket permission", "socket", e.cfg.ListenUnixgram, "err", err)
+					e.log.Warn("failed to change unixgram socket permission", "socket", e.cfg.ListenUnixgram, "err", err)
 				}
 			}
 		}

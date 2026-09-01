@@ -12,6 +12,8 @@ import (
 	"github.com/grafana/alloy/internal/component/common/kubernetes"
 )
 
+const AnnotationsSourceTenants = "monitoring.grafana.com/source_tenants"
+
 var (
 	// This should contain all valid match types for extra query matchers.
 	validMatchTypes = []string{
@@ -23,25 +25,27 @@ var (
 )
 
 type Arguments struct {
-	Address              string                  `alloy:"address,attr"`
-	TenantID             string                  `alloy:"tenant_id,attr,optional"`
-	UseLegacyRoutes      bool                    `alloy:"use_legacy_routes,attr,optional"`
-	PrometheusHTTPPrefix string                  `alloy:"prometheus_http_prefix,attr,optional"`
-	HTTPClientConfig     config.HTTPClientConfig `alloy:",squash"`
-	SyncInterval         time.Duration           `alloy:"sync_interval,attr,optional"`
-	MimirNameSpacePrefix string                  `alloy:"mimir_namespace_prefix,attr,optional"`
-	ExternalLabels       map[string]string       `alloy:"external_labels,attr,optional"`
-	ExtraQueryMatchers   *ExtraQueryMatchers     `alloy:"extra_query_matchers,block,optional"`
+	Address                 string                  `alloy:"address,attr"`
+	TenantID                string                  `alloy:"tenant_id,attr,optional"`
+	UseLegacyRoutes         bool                    `alloy:"use_legacy_routes,attr,optional"`
+	PrometheusHTTPPrefix    string                  `alloy:"prometheus_http_prefix,attr,optional"`
+	HTTPClientConfig        config.HTTPClientConfig `alloy:",squash"`
+	SyncInterval            time.Duration           `alloy:"sync_interval,attr,optional"`
+	MimirNameSpacePrefix    string                  `alloy:"mimir_namespace_prefix,attr,optional"`
+	MimirNamespaceSeparator string                  `alloy:"mimir_namespace_separator,attr,optional"`
+	ExternalLabels          map[string]string       `alloy:"external_labels,attr,optional"`
+	ExtraQueryMatchers      *ExtraQueryMatchers     `alloy:"extra_query_matchers,block,optional"`
 
 	RuleSelector          kubernetes.LabelSelector `alloy:"rule_selector,block,optional"`
 	RuleNamespaceSelector kubernetes.LabelSelector `alloy:"rule_namespace_selector,block,optional"`
 }
 
 var DefaultArguments = Arguments{
-	SyncInterval:         5 * time.Minute,
-	MimirNameSpacePrefix: "alloy",
-	HTTPClientConfig:     config.DefaultHTTPClientConfig,
-	PrometheusHTTPPrefix: "/prometheus",
+	SyncInterval:            5 * time.Minute,
+	MimirNameSpacePrefix:    "alloy",
+	MimirNamespaceSeparator: "/",
+	HTTPClientConfig:        config.DefaultHTTPClientConfig,
+	PrometheusHTTPPrefix:    "/prometheus",
 }
 
 // SetToDefault implements syntax.Defaulter.
@@ -56,6 +60,9 @@ func (args *Arguments) Validate() error {
 	}
 	if args.MimirNameSpacePrefix == "" {
 		return fmt.Errorf("mimir_namespace_prefix must not be empty")
+	}
+	if args.MimirNamespaceSeparator == "" {
+		return fmt.Errorf("mimir_namespace_separator must not be empty")
 	}
 	if err := args.ExtraQueryMatchers.Validate(); err != nil {
 		return err
@@ -81,14 +88,25 @@ func (e *ExtraQueryMatchers) Validate() error {
 }
 
 type Matcher struct {
-	Name      string `alloy:"name,attr"`
-	Value     string `alloy:"value,attr"`
-	MatchType string `alloy:"match_type,attr"`
+	Name           string `alloy:"name,attr"`
+	Value          string `alloy:"value,attr,optional"`
+	ValueFromLabel string `alloy:"value_from_label,attr,optional"`
+	MatchType      string `alloy:"match_type,attr"`
 }
 
 func (m Matcher) Validate() error {
 	if !slices.Contains(validMatchTypes, m.MatchType) {
 		return fmt.Errorf("invalid match type: %q", m.MatchType)
+	}
+	// Check that exactly one value source is provided
+	valueSourceCount := 0
+	for _, field := range []string{m.Value, m.ValueFromLabel} {
+		if field != "" {
+			valueSourceCount++
+		}
+	}
+	if valueSourceCount != 1 {
+		return fmt.Errorf("exactly one of 'value' or 'value_from_label' must be provided, got %d", valueSourceCount)
 	}
 	return nil
 }

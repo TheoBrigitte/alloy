@@ -4,6 +4,7 @@ package redis_exporter
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -12,8 +13,6 @@ import (
 	integrations_v2 "github.com/grafana/alloy/internal/static/integrations/v2"
 	"github.com/grafana/alloy/internal/static/integrations/v2/metricsutils"
 
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
 	re "github.com/oliver006/redis_exporter/exporter"
 	config_util "github.com/prometheus/common/config"
 )
@@ -82,6 +81,7 @@ func (c Config) GetExporterOptions() re.Options {
 		CheckKeys:                 c.CheckKeys,
 		CheckKeysBatchSize:        c.CheckKeyGroupsBatchSize,
 		CheckKeyGroups:            c.CheckKeyGroups,
+		MaxDistinctKeyGroups:      c.MaxDistinctKeyGroups,
 		CheckSingleKeys:           c.CheckSingleKeys,
 		CheckStreams:              c.CheckStreams,
 		CheckSingleStreams:        c.CheckSingleStreams,
@@ -103,7 +103,7 @@ func (c Config) GetExporterOptions() re.Options {
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler for Config
-func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (c *Config) UnmarshalYAML(unmarshal func(any) error) error {
 	*c = DefaultConfig
 
 	type plain Config
@@ -116,12 +116,12 @@ func (c *Config) Name() string {
 }
 
 // InstanceKey returns the addr of the redis server.
-func (c *Config) InstanceKey(agentKey string) (string, error) {
+func (c *Config) InstanceKey(_ string) (string, error) {
 	return c.RedisAddr, nil
 }
 
 // NewIntegration converts the config into an integration instance.
-func (c *Config) NewIntegration(l log.Logger) (integrations.Integration, error) {
+func (c *Config) NewIntegration(l *slog.Logger) (integrations.Integration, error) {
 	return New(l, c)
 }
 
@@ -132,8 +132,8 @@ func init() {
 
 // New creates a new redis_exporter integration. The integration queries
 // a redis instance's INFO and exposes the results as metrics.
-func New(log log.Logger, c *Config) (integrations.Integration, error) {
-	level.Debug(log).Log("msg", "initializing redis_exporter", "config", c)
+func New(log *slog.Logger, c *Config) (integrations.Integration, error) {
+	log.Debug("initializing redis_exporter", "config", c)
 
 	exporterConfig := c.GetExporterOptions()
 
@@ -153,7 +153,7 @@ func New(log log.Logger, c *Config) (integrations.Integration, error) {
 		exporterConfig.LuaScript = scripts
 	}
 
-	//new version of the exporter takes the file paths directly, for hot-reloading support (https://github.com/oliver006/redis_exporter/pull/526)
+	// new version of the exporter takes the file paths directly, for hot-reloading support (https://github.com/oliver006/redis_exporter/pull/526)
 
 	if (c.TLSClientKeyFile != "") != (c.TLSClientCertFile != "") {
 		return nil, errors.New("TLS client key file and cert file should both be present")

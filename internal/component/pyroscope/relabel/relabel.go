@@ -15,16 +15,16 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"sort"
 	"sync"
 
+	"github.com/grafana/alloy/internal/component/pyroscope/write/debuginfo"
+	"github.com/grafana/alloy/internal/component/pyroscope/write/debuginfoclient"
 	"go.uber.org/atomic"
 
 	"github.com/grafana/alloy/internal/component"
 	alloy_relabel "github.com/grafana/alloy/internal/component/common/relabel"
 	"github.com/grafana/alloy/internal/component/pyroscope"
 	"github.com/grafana/alloy/internal/featuregate"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/prometheus/common/model"
@@ -35,7 +35,7 @@ import (
 func init() {
 	component.Register(component.Registration{
 		Name:      "pyroscope.relabel",
-		Stability: featuregate.StabilityPublicPreview,
+		Stability: featuregate.StabilityGenerallyAvailable,
 		Args:      Arguments{},
 		Exports:   Exports{},
 		Build: func(opts component.Options, args component.Arguments) (component.Component, error) {
@@ -129,7 +129,7 @@ func (c *Component) Update(args component.Arguments) error {
 
 	// If relabeling rules changed, purge the cache
 	if relabelingChanged(c.rcs, newRCS) {
-		level.Debug(c.opts.Logger).Log("msg", "received new relabel configs, purging cache")
+		c.opts.Logger.Debug("received new relabel configs, purging cache")
 		c.cache.Purge()
 		c.metrics.cacheSize.Set(0)
 	}
@@ -137,7 +137,7 @@ func (c *Component) Update(args component.Arguments) error {
 	if newArgs.MaxCacheSize != c.maxCacheSize {
 		evicted := c.cache.Resize(newArgs.MaxCacheSize)
 		if evicted > 0 {
-			level.Debug(c.opts.Logger).Log("msg", "resizing cache led to evicting items", "evicted_count", evicted)
+			c.opts.Logger.Debug("resizing cache led to evicting items", "evicted_count", evicted)
 		}
 		c.maxCacheSize = newArgs.MaxCacheSize
 	}
@@ -171,7 +171,7 @@ func (c *Component) Append(ctx context.Context, lbls labels.Labels, samples []*p
 	newLabels, keep := c.relabel(lbls)
 	if !keep {
 		c.metrics.profilesDropped.Inc()
-		level.Debug(c.opts.Logger).Log("msg", "profile dropped by relabel rules", "labels", lbls.String())
+		c.opts.Logger.Debug("profile dropped by relabel rules", "labels", lbls.String())
 		return nil
 	}
 
@@ -197,7 +197,7 @@ func (c *Component) AppendIngest(ctx context.Context, profile *pyroscope.Incomin
 	newLabels, keep := c.relabel(profile.Labels)
 	if !keep {
 		c.metrics.profilesDropped.Inc()
-		level.Debug(c.opts.Logger).Log("msg", "profile dropped by relabel rules")
+		c.opts.Logger.Debug("profile dropped by relabel rules")
 		return nil
 	}
 
@@ -295,14 +295,19 @@ func toModelLabelSet(lbls labels.Labels) model.LabelSet {
 
 // toLabelsLabels converts model.LabelSet to labels.Labels
 func toLabelsLabels(ls model.LabelSet) labels.Labels {
-	result := make(labels.Labels, 0, len(ls))
+	result := labels.NewScratchBuilder(len(ls))
 	for name, value := range ls {
-		result = append(result, labels.Label{
-			Name:  string(name),
-			Value: string(value),
-		})
+		result.Add(string(name), string(value))
 	}
 	// Labels need to be sorted
-	sort.Sort(result)
-	return result
+	result.Sort()
+	return result.Labels()
+}
+
+func (c *Component) Upload(j debuginfo.UploadJob) {
+	c.fanout.Upload(j)
+}
+
+func (c *Component) DebugInfoClients() []*debuginfoclient.Client {
+	return c.fanout.DebugInfoClients()
 }

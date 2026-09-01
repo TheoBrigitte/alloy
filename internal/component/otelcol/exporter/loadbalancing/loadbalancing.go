@@ -8,22 +8,24 @@ import (
 
 	"github.com/alecthomas/units"
 	"github.com/aws/aws-sdk-go-v2/service/servicediscovery/types"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/loadbalancingexporter"
+	otelcomponent "go.opentelemetry.io/collector/component"
+	otelconfigauth "go.opentelemetry.io/collector/config/configauth"
+	otelconfiggrpc "go.opentelemetry.io/collector/config/configgrpc"
+	"go.opentelemetry.io/collector/config/configopaque"
+	"go.opentelemetry.io/collector/config/configoptional"
+	"go.opentelemetry.io/collector/exporter/exporterhelper"
+	"go.opentelemetry.io/collector/exporter/otlpexporter"
+	"go.opentelemetry.io/collector/pipeline"
+	"k8s.io/utils/ptr"
+
 	"github.com/grafana/alloy/internal/component"
 	"github.com/grafana/alloy/internal/component/otelcol"
 	"github.com/grafana/alloy/internal/component/otelcol/auth"
 	otelcolCfg "github.com/grafana/alloy/internal/component/otelcol/config"
 	"github.com/grafana/alloy/internal/component/otelcol/exporter"
 	"github.com/grafana/alloy/internal/featuregate"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 	"github.com/grafana/alloy/syntax"
-	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/loadbalancingexporter"
-	otelcomponent "go.opentelemetry.io/collector/component"
-	otelconfigauth "go.opentelemetry.io/collector/config/configauth"
-	otelconfiggrpc "go.opentelemetry.io/collector/config/configgrpc"
-	"go.opentelemetry.io/collector/config/configopaque"
-	"go.opentelemetry.io/collector/exporter/exporterhelper"
-	"go.opentelemetry.io/collector/exporter/otlpexporter"
-	"go.opentelemetry.io/collector/pipeline"
 )
 
 func init() {
@@ -49,14 +51,14 @@ func init() {
 					if opts.MinStability.Permits(featuregate.StabilityExperimental) {
 						typeSignal = exporter.TypeLogs | exporter.TypeTraces | exporter.TypeMetrics
 					} else {
-						level.Warn(opts.Logger).Log("msg", "disabling metrics exporter as stability level does not allow it")
+						opts.Logger.Warn("disabling metrics exporter as stability level does not allow it")
 						typeSignal = exporter.TypeLogs | exporter.TypeTraces
 					}
 				case "resource", "metric", "streamID":
 					if opts.MinStability.Permits(featuregate.StabilityExperimental) {
 						typeSignal = exporter.TypeMetrics
 					} else {
-						level.Warn(opts.Logger).Log("msg", "disabling metrics exporter as stability level does not allow it")
+						opts.Logger.Warn("disabling metrics exporter as stability level does not allow it")
 					}
 				}
 				return typeSignal
@@ -93,6 +95,10 @@ func (args *Arguments) SetToDefault() {
 	}
 	args.DebugMetrics.SetToDefault()
 	args.Protocol.OTLP.SetToDefault()
+	// Do not set these two to their default values.
+	// Upstream doesn't do that for backwards compatibility.
+	// args.Retry.SetToDefault()
+	// args.Queue.SetToDefault()
 }
 
 // Validate implements syntax.Validator.
@@ -133,7 +139,7 @@ func (args Arguments) Convert() (otelcomponent.Config, error) {
 			Timeout: args.Timeout,
 		},
 		BackOffConfig: *args.Retry.Convert(),
-		QueueSettings: *q,
+		QueueSettings: q,
 	}, nil
 }
 
@@ -185,7 +191,7 @@ func (oc OtlpConfig) Convert() (*otlpexporter.Config, error) {
 		TimeoutConfig: exporterhelper.TimeoutConfig{
 			Timeout: oc.Timeout,
 		},
-		QueueConfig:  *q,
+		QueueConfig:  q,
 		RetryConfig:  *oc.Retry.Convert(),
 		ClientConfig: *clientConfig,
 	}, nil
@@ -215,14 +221,14 @@ type StaticResolver struct {
 	Hostnames []string `alloy:"hostnames,attr"`
 }
 
-func (r *StaticResolver) Convert() *loadbalancingexporter.StaticResolver {
+func (r *StaticResolver) Convert() configoptional.Optional[loadbalancingexporter.StaticResolver] {
 	if r == nil {
-		return nil
+		return configoptional.None[loadbalancingexporter.StaticResolver]()
 	}
 
-	return &loadbalancingexporter.StaticResolver{
+	return configoptional.Some(loadbalancingexporter.StaticResolver{
 		Hostnames: r.Hostnames,
-	}
+	})
 }
 
 // DNSResolver defines the configuration for the DNS resolver
@@ -244,17 +250,17 @@ func (r *DNSResolver) SetToDefault() {
 	}
 }
 
-func (r *DNSResolver) Convert() *loadbalancingexporter.DNSResolver {
+func (r *DNSResolver) Convert() configoptional.Optional[loadbalancingexporter.DNSResolver] {
 	if r == nil {
-		return nil
+		return configoptional.None[loadbalancingexporter.DNSResolver]()
 	}
 
-	return &loadbalancingexporter.DNSResolver{
+	return configoptional.Some(loadbalancingexporter.DNSResolver{
 		Hostname: r.Hostname,
 		Port:     r.Port,
 		Interval: r.Interval,
 		Timeout:  r.Timeout,
-	}
+	})
 }
 
 // KubernetesResolver defines the configuration for the k8s resolver
@@ -271,21 +277,21 @@ var _ syntax.Defaulter = &KubernetesResolver{}
 func (r *KubernetesResolver) SetToDefault() {
 	*r = KubernetesResolver{
 		Ports:   []int32{4317},
-		Timeout: 1 * time.Second,
+		Timeout: 1 * time.Minute,
 	}
 }
 
-func (r *KubernetesResolver) Convert() *loadbalancingexporter.K8sSvcResolver {
+func (r *KubernetesResolver) Convert() configoptional.Optional[loadbalancingexporter.K8sSvcResolver] {
 	if r == nil {
-		return nil
+		return configoptional.None[loadbalancingexporter.K8sSvcResolver]()
 	}
 
-	return &loadbalancingexporter.K8sSvcResolver{
+	return configoptional.Some(loadbalancingexporter.K8sSvcResolver{
 		Service:         r.Service,
 		Ports:           append([]int32{}, r.Ports...),
 		Timeout:         r.Timeout,
 		ReturnHostnames: r.ReturnHostnames,
-	}
+	})
 }
 
 // Possible values for "health_status"
@@ -305,6 +311,8 @@ type AWSCloudMapResolver struct {
 	Interval      time.Duration `alloy:"interval,attr,optional"`
 	Timeout       time.Duration `alloy:"timeout,attr,optional"`
 	Port          *uint16       `alloy:"port,attr,optional"`
+	// OwnerAccount is the AWS account that owns the Cloud Map namespace, for cross-account service discovery.
+	OwnerAccount string `alloy:"owner_account,attr,optional"`
 }
 
 var _ syntax.Defaulter = &AWSCloudMapResolver{}
@@ -334,9 +342,9 @@ func (r *AWSCloudMapResolver) Validate() error {
 	}
 }
 
-func (r *AWSCloudMapResolver) Convert() *loadbalancingexporter.AWSCloudMapResolver {
+func (r *AWSCloudMapResolver) Convert() configoptional.Optional[loadbalancingexporter.AWSCloudMapResolver] {
 	if r == nil {
-		return nil
+		return configoptional.None[loadbalancingexporter.AWSCloudMapResolver]()
 	}
 
 	// Deep copy the port
@@ -346,14 +354,20 @@ func (r *AWSCloudMapResolver) Convert() *loadbalancingexporter.AWSCloudMapResolv
 		port = &portNum
 	}
 
-	return &loadbalancingexporter.AWSCloudMapResolver{
+	var ownerAccount *string
+	if r.OwnerAccount != "" {
+		ownerAccount = ptr.To(r.OwnerAccount)
+	}
+
+	return configoptional.Some(loadbalancingexporter.AWSCloudMapResolver{
 		NamespaceName: r.NamespaceName,
 		ServiceName:   r.ServiceName,
 		HealthStatus:  types.HealthStatusFilter(r.HealthStatus),
 		Interval:      r.Interval,
 		Timeout:       r.Timeout,
 		Port:          port,
-	}
+		OwnerAccount:  ownerAccount,
+	})
 }
 
 // Extensions implements exporter.Arguments.
@@ -402,20 +416,20 @@ func (args *GRPCClientArguments) Convert() (*otelconfiggrpc.ClientConfig, error)
 		return nil, nil
 	}
 
-	opaqueHeaders := make(map[string]configopaque.String)
+	opaqueHeaders := configopaque.MapList{}
 	for headerName, headerVal := range args.Headers {
-		opaqueHeaders[headerName] = configopaque.String(headerVal)
+		opaqueHeaders.Set(headerName, configopaque.String(headerVal))
 	}
 
 	// Configure the authentication if args.Auth is set.
-	var authentication *otelconfigauth.Authentication
+	var authentication configoptional.Optional[otelconfigauth.Config]
 	if args.Authentication != nil {
 		ext, err := args.Authentication.GetExtension(auth.Client)
 		if err != nil {
 			return nil, err
 		}
 
-		authentication = &otelconfigauth.Authentication{AuthenticatorID: ext.ID}
+		authentication = configoptional.Some(otelconfigauth.Config{AuthenticatorID: ext.ID})
 	}
 
 	balancerName := args.BalancerName
@@ -426,8 +440,8 @@ func (args *GRPCClientArguments) Convert() (*otelconfiggrpc.ClientConfig, error)
 	return &otelconfiggrpc.ClientConfig{
 		Compression: args.Compression.Convert(),
 
-		TLSSetting: *args.TLS.Convert(),
-		Keepalive:  args.Keepalive.Convert(),
+		TLS:       *args.TLS.Convert(),
+		Keepalive: args.Keepalive.Convert(),
 
 		ReadBufferSize:  int(args.ReadBufferSize),
 		WriteBufferSize: int(args.WriteBufferSize),

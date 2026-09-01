@@ -3,14 +3,15 @@ package squid_exporter
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
+	"net/netip"
 	"strconv"
 
 	se "github.com/boynux/squid-exporter/collector"
-	"github.com/go-kit/log"
-	"github.com/grafana/alloy/internal/static/integrations"
 	config_util "github.com/prometheus/common/config"
 
+	"github.com/grafana/alloy/internal/static/integrations"
 	integrations_v2 "github.com/grafana/alloy/internal/static/integrations/v2"
 	"github.com/grafana/alloy/internal/static/integrations/v2/metricsutils"
 )
@@ -43,7 +44,13 @@ func (c *Config) validate() error {
 	if host == "" {
 		return ErrNoHostname
 	}
-	c.Host = host
+
+	if ip, err := netip.ParseAddr(host); err == nil && ip.IsValid() && ip.Is6() {
+		// Restore the explicit brackets for IPv6 addresses
+		c.Host = fmt.Sprintf("[%s]", host)
+	} else {
+		c.Host = host
+	}
 
 	if port == "" {
 		return ErrNoPort
@@ -58,7 +65,7 @@ func (c *Config) validate() error {
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler for Config
-func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (c *Config) UnmarshalYAML(unmarshal func(any) error) error {
 	*c = Config{}
 
 	type plain Config
@@ -71,12 +78,12 @@ func (c *Config) Name() string {
 }
 
 // InstanceKey returns the addr of the squid instance.
-func (c *Config) InstanceKey(agentKey string) (string, error) {
+func (c *Config) InstanceKey(_ string) (string, error) {
 	return c.Address, nil
 }
 
 // NewIntegration returns the Squid Exporter Integration
-func (c *Config) NewIntegration(log log.Logger) (integrations.Integration, error) {
+func (c *Config) NewIntegration(_ *slog.Logger) (integrations.Integration, error) {
 	return New(c)
 }
 

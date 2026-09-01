@@ -1,6 +1,6 @@
 # Grafana Alloy Helm chart
 
-![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![Version: 1.0.2](https://img.shields.io/badge/Version-1.0.2-informational?style=flat-square) ![AppVersion: v1.8.2](https://img.shields.io/badge/AppVersion-v1.8.2-informational?style=flat-square)
+![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![Version: 1.12.1](https://img.shields.io/badge/Version-1.12.1-informational?style=flat-square) ![AppVersion: v1.19.2](https://img.shields.io/badge/AppVersion-v1.19.2-informational?style=flat-square)
 
 Helm chart for deploying [Grafana Alloy][] to Kubernetes.
 
@@ -36,16 +36,19 @@ useful if just using the default DaemonSet isn't sufficient.
 | alloy.clustering.enabled | bool | `false` | Deploy Alloy in a cluster to allow for load distribution. |
 | alloy.clustering.name | string | `""` | Name for the Alloy cluster. Used for differentiating between clusters. |
 | alloy.clustering.portName | string | `"http"` | Name for the port used for clustering, useful if running inside an Istio Mesh |
+| alloy.command | list | `[]` | Override the entrypoint command for the Alloy container. When set, this replaces the image's default entrypoint (the chart-provided `args` are still passed). Useful on Windows where the binary lives at a different path, for example `["C:\\Program Files\\GrafanaLabs\\Alloy\\alloy.exe"]`. Leave empty to use the image's default entrypoint. |
 | alloy.configMap.content | string | `""` | Content to assign to the new ConfigMap.  This is passed into `tpl` allowing for templating from values. |
 | alloy.configMap.create | bool | `true` | Create a new ConfigMap for the config file. |
 | alloy.configMap.key | string | `nil` | Key in ConfigMap to get config from. |
 | alloy.configMap.name | string | `nil` | Name of existing ConfigMap to use. Used when create is false. |
+| alloy.enableHttpServerPort | bool | `true` | Enables Grafana Alloy container's http server port. |
 | alloy.enableReporting | bool | `true` | Enables sending Grafana Labs anonymous usage stats to help improve Grafana Alloy. |
 | alloy.envFrom | list | `[]` | Maps all the keys on a ConfigMap or Secret as environment variables. https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#envfromsource-v1-core |
 | alloy.extraArgs | list | `[]` | Extra args to pass to `alloy run`: https://grafana.com/docs/alloy/latest/reference/cli/run/ |
 | alloy.extraEnv | list | `[]` | Extra environment variables to pass to the Alloy container. |
-| alloy.extraPorts | list | `[]` | Extra ports to expose on the Alloy container. |
+| alloy.extraPorts | list | `[]` | Extra ports to expose on the Alloy container. If `service.type` is `NodePort`, each item may set `nodePort` to choose the Service NodePort for that port. |
 | alloy.hostAliases | list | `[]` | Host aliases to add to the Alloy container. |
+| alloy.initialDelaySeconds | int | `10` | Initial delay for readiness probe. |
 | alloy.lifecycle | object | `{}` | Set lifecycle hooks for the Grafana Alloy container. |
 | alloy.listenAddr | string | `"0.0.0.0"` | Address to listen for traffic on. 0.0.0.0 exposes the UI to other containers. |
 | alloy.listenPort | int | `12345` | Port to listen for traffic on. |
@@ -58,19 +61,22 @@ useful if just using the default DaemonSet isn't sufficient.
 | alloy.securityContext | object | `{}` | Security context to apply to the Grafana Alloy container. |
 | alloy.stabilityLevel | string | `"generally-available"` | Minimum stability level of components and behavior to enable. Must be one of "experimental", "public-preview", or "generally-available". |
 | alloy.storagePath | string | `"/tmp/alloy"` | Path to where Grafana Alloy stores data (for example, the Write-Ahead Log). By default, data is lost between reboots. |
+| alloy.timeoutSeconds | int | `1` | Timeout for readiness probe. |
 | alloy.uiPathPrefix | string | `"/"` | Base path where the UI is exposed. |
 | configReloader.customArgs | list | `[]` | Override the args passed to the container. |
 | configReloader.enabled | bool | `true` | Enables automatically reloading when the Alloy config changes. |
 | configReloader.image.digest | string | `""` | SHA256 digest of image to use for config reloading (either in format "sha256:XYZ" or "XYZ"). When set, will override `configReloader.image.tag` |
+| configReloader.image.pullPolicy | string | `"IfNotPresent"` | Config reloader image pull policy. |
 | configReloader.image.registry | string | `"quay.io"` | Config reloader image registry (defaults to docker.io) |
 | configReloader.image.repository | string | `"prometheus-operator/prometheus-config-reloader"` | Repository to get config reloader image from. |
-| configReloader.image.tag | string | `"v0.81.0"` | Tag of image to use for config reloading. |
+| configReloader.image.tag | string | `"v0.91.0@sha256:7d9e4eea5f1139e602508871f422b0116c60e87c662f3dcd234d5ab60cd0d8c1"` | Tag of image to use for config reloading. |
 | configReloader.resources | object | `{"requests":{"cpu":"10m","memory":"50Mi"}}` | Resource requests and limits to apply to the config reloader container. |
-| configReloader.securityContext | object | `{}` | Security context to apply to the Grafana configReloader container. |
+| configReloader.securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsGroup":65534,"runAsNonRoot":true,"runAsUser":65534,"seccompProfile":{"type":"RuntimeDefault"}}` | Security context to apply to the Grafana configReloader container. |
 | controller.affinity | object | `{}` | Affinity configuration for pods. |
 | controller.autoscaling.enabled | bool | `false` | Creates a HorizontalPodAutoscaler for controller type deployment. Deprecated: Please use controller.autoscaling.horizontal instead |
-| controller.autoscaling.horizontal | object | `{"enabled":false,"maxReplicas":5,"minReplicas":1,"scaleDown":{"policies":[],"selectPolicy":"Max","stabilizationWindowSeconds":300},"scaleUp":{"policies":[],"selectPolicy":"Max","stabilizationWindowSeconds":0},"targetCPUUtilizationPercentage":0,"targetMemoryUtilizationPercentage":80}` | Configures the Horizontal Pod Autoscaler for the controller. |
+| controller.autoscaling.horizontal | object | `{"enabled":false,"externalHPA":false,"maxReplicas":5,"minReplicas":1,"scaleDown":{"policies":[],"selectPolicy":"Max","stabilizationWindowSeconds":300},"scaleUp":{"policies":[],"selectPolicy":"Max","stabilizationWindowSeconds":0},"targetCPUUtilizationPercentage":0,"targetMemoryUtilizationPercentage":80}` | Configures the Horizontal Pod Autoscaler for the controller. |
 | controller.autoscaling.horizontal.enabled | bool | `false` | Enables the Horizontal Pod Autoscaler for the controller. |
+| controller.autoscaling.horizontal.externalHPA | bool | `false` | When true, the chart omits `spec.replicas` from the workload AND does NOT render its own HorizontalPodAutoscaler. Use this when an external controller (e.g. KEDA, a hand-written HPA, or another scaler) owns replicas for the Alloy workload. Mutually exclusive with `horizontal.enabled`. When set, all other `controller.autoscaling.horizontal.*` fields are ignored.  Upgrade note: switching this from `false` to `true` on an existing release triggers a one-time single-cycle dip to 1 replica on the next `helm upgrade` (Helm removes the `replicas` field via `{"spec":{"replicas":null}}`, which Kubernetes interprets as "reset to default"). The external HPA corrects this within its next polling interval; users with `minReplicaCount > 1` are restored within ~30s under KEDA defaults. Plan upgrades accordingly. |
 | controller.autoscaling.horizontal.maxReplicas | int | `5` | The upper limit for the number of replicas to which the autoscaler can scale up. |
 | controller.autoscaling.horizontal.minReplicas | int | `1` | The lower limit for the number of replicas to which the autoscaler can scale down. |
 | controller.autoscaling.horizontal.scaleDown.policies | list | `[]` | List of policies to determine the scale-down behavior. |
@@ -105,6 +111,7 @@ useful if just using the default DaemonSet isn't sufficient.
 | controller.enableStatefulSetAutoDeletePVC | bool | `false` | Whether to enable automatic deletion of stale PVCs due to a scale down operation, when controller.type is 'statefulset'. |
 | controller.extraAnnotations | object | `{}` | Annotations to add to controller. |
 | controller.extraContainers | list | `[]` | Additional containers to run alongside the Alloy container and initContainers. |
+| controller.extraLabels | object | `{}` | Extra labels to add to the controller. |
 | controller.hostNetwork | bool | `false` | Configures Pods to use the host network. When set to true, the ports that will be used must be specified. |
 | controller.hostPID | bool | `false` | Configures Pods to use the host PID namespace. |
 | controller.initContainers | list | `[]` |  |
@@ -119,6 +126,7 @@ useful if just using the default DaemonSet isn't sufficient.
 | controller.podLabels | object | `{}` | Extra pod labels to add. |
 | controller.priorityClassName | string | `""` | priorityClassName to apply to Grafana Alloy pods. |
 | controller.replicas | int | `1` | Number of pods to deploy. Ignored when controller.type is 'daemonset'. |
+| controller.revisionHistoryLimit | int | `10` | The maximum number of revisions that will be maintained in the Controllers's revision history. The history consists of all revisions not represented by a currently applied reversion. |
 | controller.terminationGracePeriodSeconds | string | `nil` | Termination grace period in seconds for the Grafana Alloy pods. The default value used by Kubernetes if unspecifed is 30 seconds. |
 | controller.tolerations | list | `[]` | Tolerations to apply to Grafana Alloy pods. |
 | controller.topologySpreadConstraints | list | `[]` | Topology Spread Constraints to apply to Grafana Alloy pods. |
@@ -129,6 +137,7 @@ useful if just using the default DaemonSet isn't sufficient.
 | crds.create | bool | `true` | Whether to install CRDs for monitoring. |
 | extraObjects | list | `[]` | Extra k8s manifests to deploy |
 | fullnameOverride | string | `nil` | Overrides the chart's computed fullname. Used to change the full prefix of resource names. |
+| global.image.pullPolicy | string | `""` | Global image pull policy to apply to all containers. Overrides `image.pullPolicy` and `configReloader.image.pullPolicy`. |
 | global.image.pullSecrets | list | `[]` | Optional set of global image pull secrets. |
 | global.image.registry | string | `""` | Global image registry to use if it needs to be overridden for some specific use cases (e.g local registries, custom images, ...) |
 | global.podSecurityContext | object | `{}` | Security context to apply to the Grafana Alloy pod. |
@@ -149,10 +158,33 @@ useful if just using the default DaemonSet isn't sufficient.
 | ingress.tls | list | `[]` |  |
 | nameOverride | string | `nil` | Overrides the chart's name. Used to change the infix in the resource names. |
 | namespaceOverride | string | `nil` | Overrides the chart's namespace. |
+| networkPolicy.egress[0] | object | `{}` |  |
+| networkPolicy.enabled | bool | `false` |  |
+| networkPolicy.flavor | string | `"kubernetes"` |  |
+| networkPolicy.ingress[0] | object | `{}` |  |
+| networkPolicy.policyTypes[0] | string | `"Ingress"` |  |
+| networkPolicy.policyTypes[1] | string | `"Egress"` |  |
+| rbac.clusterRules | list | `[{"apiGroups":[""],"resources":["nodes"],"verbs":["get","list","watch"]},{"apiGroups":[""],"resources":["nodes/pods"],"verbs":["get","list","watch"]},{"apiGroups":[""],"resources":["nodes/metrics"],"verbs":["get","list","watch"]},{"nonResourceURLs":["/metrics"],"verbs":["get"]}]` | The rules to create for the ClusterRole objects. |
+| rbac.clusterRules[0] | object | `{"apiGroups":[""],"resources":["nodes"],"verbs":["get","list","watch"]}` | Rules required for the Nodes role in the `discovery.kubernetes` component. |
+| rbac.clusterRules[1] | object | `{"apiGroups":[""],"resources":["nodes/pods"],"verbs":["get","list","watch"]}` | Rules required for the `discovery.kubelet` component. |
+| rbac.clusterRules[2] | object | `{"apiGroups":[""],"resources":["nodes/metrics"],"verbs":["get","list","watch"]}` | Rules required accessing metric endpoints on the Node (e.g. Kubelet, cAdvisor, etc...). |
+| rbac.clusterRules[3] | object | `{"nonResourceURLs":["/metrics"],"verbs":["get"]}` | Rules required for accessing metrics endpoint. |
 | rbac.create | bool | `true` | Whether to create RBAC resources for Alloy. |
+| rbac.namespaces | list | `[]` | If set, only create Roles and RoleBindings in the given list of namespaces, rather than ClusterRoles and ClusterRoleBindings. If not using ClusterRoles, bear in mind that Alloy will not be able to discover cluster-scoped resources such as Nodes. |
+| rbac.rules | list | `[{"apiGroups":["","discovery.k8s.io","networking.k8s.io"],"resources":["endpoints","endpointslices","ingresses","pods","services"],"verbs":["get","list","watch"]},{"apiGroups":[""],"resources":["pods","pods/log","namespaces"],"verbs":["get","list","watch"]},{"apiGroups":["monitoring.grafana.com"],"resources":["podlogs"],"verbs":["get","list","watch"]},{"apiGroups":["monitoring.coreos.com"],"resources":["prometheusrules"],"verbs":["get","list","watch"]},{"apiGroups":["monitoring.coreos.com"],"resources":["alertmanagerconfigs"],"verbs":["get","list","watch"]},{"apiGroups":["monitoring.coreos.com"],"resources":["podmonitors","servicemonitors","probes","scrapeconfigs"],"verbs":["get","list","watch"]},{"apiGroups":[""],"resources":["events"],"verbs":["get","list","watch"]},{"apiGroups":[""],"resources":["configmaps","secrets"],"verbs":["get","list","watch"]},{"apiGroups":["apps","extensions"],"resources":["replicasets"],"verbs":["get","list","watch"]}]` | The rules to create for the ClusterRole or Role objects. |
+| rbac.rules[0] | object | `{"apiGroups":["","discovery.k8s.io","networking.k8s.io"],"resources":["endpoints","endpointslices","ingresses","pods","services"],"verbs":["get","list","watch"]}` | Rules required for the `discovery.kubernetes` component. |
+| rbac.rules[1] | object | `{"apiGroups":[""],"resources":["pods","pods/log","namespaces"],"verbs":["get","list","watch"]}` | Rules required for the `loki.source.kubernetes` component. |
+| rbac.rules[2] | object | `{"apiGroups":["monitoring.grafana.com"],"resources":["podlogs"],"verbs":["get","list","watch"]}` | Rules required for the `loki.source.podlogs` component. |
+| rbac.rules[3] | object | `{"apiGroups":["monitoring.coreos.com"],"resources":["prometheusrules"],"verbs":["get","list","watch"]}` | Rules required for the `mimir.rules.kubernetes` component. |
+| rbac.rules[4] | object | `{"apiGroups":["monitoring.coreos.com"],"resources":["alertmanagerconfigs"],"verbs":["get","list","watch"]}` | Rules required for the `mimir.alerts.kubernetes` component. |
+| rbac.rules[5] | object | `{"apiGroups":["monitoring.coreos.com"],"resources":["podmonitors","servicemonitors","probes","scrapeconfigs"],"verbs":["get","list","watch"]}` | Rules required for the `prometheus.operator.*` components. |
+| rbac.rules[6] | object | `{"apiGroups":[""],"resources":["events"],"verbs":["get","list","watch"]}` | Rules required for the `loki.source.kubernetes_events` component. |
+| rbac.rules[7] | object | `{"apiGroups":[""],"resources":["configmaps","secrets"],"verbs":["get","list","watch"]}` | Rules required for the `remote.kubernetes.*` components. |
+| rbac.rules[8] | object | `{"apiGroups":["apps","extensions"],"resources":["replicasets"],"verbs":["get","list","watch"]}` | Rules required for the `otelcol.processor.k8sattributes` component. |
 | service.annotations | object | `{}` |  |
 | service.clusterIP | string | `""` | Cluster IP, can be set to None, empty "" or an IP address |
 | service.enabled | bool | `true` | Creates a Service for the controller's pods. |
+| service.externalTrafficPolicy | string | `"Cluster"` | Value for external traffic policy. 'Cluster' or 'Local' |
 | service.internalTrafficPolicy | string | `"Cluster"` | Value for internal traffic policy. 'Cluster' or 'Local' |
 | service.nodePort | int | `31128` | NodePort port. Only takes effect when `service.type: NodePort` |
 | service.type | string | `"ClusterIP"` | Service type |
@@ -203,7 +235,7 @@ container. The list of available arguments is documented on [alloy run][].
 
 `alloy.extraPorts` allows for configuring specific open ports.
 
-The detained specification of ports can be found at the [Kubernetes Pod documents](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#ports).
+Detailed specification of ports can be found at the [Kubernetes Pod documents](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#ports).
 
 Port numbers specified must be 0 < x < 65535.
 

@@ -2,6 +2,7 @@ package configgen
 
 import (
 	"fmt"
+
 	"net/url"
 	"testing"
 	"time"
@@ -13,11 +14,20 @@ import (
 	promopv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	promConfig "github.com/prometheus/common/config"
 	"github.com/prometheus/common/model"
+	promconfig "github.com/prometheus/prometheus/config"
 	promk8s "github.com/prometheus/prometheus/discovery/kubernetes"
 	"github.com/prometheus/prometheus/model/relabel"
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 )
+
+func boolPtr(val bool) *bool {
+	return &val
+}
+
+func stringPtr(val string) *string {
+	return &val
+}
 
 var (
 	configGen = &ConfigGenerator{
@@ -69,7 +79,7 @@ func TestGenerateK8SSDConfig(t *testing.T) {
 				APIServer: config.URL{},
 			},
 			attachMetadata: &promopv1.AttachMetadata{
-				Node: true,
+				Node: boolPtr(true),
 			},
 			expected: &promk8s.SDConfig{
 				Role:               promk8s.RoleEndpoint,
@@ -187,8 +197,8 @@ func TestGenerateSafeTLSConfig(t *testing.T) {
 		{
 			name: "empty",
 			tlsConfig: promopv1.SafeTLSConfig{
-				InsecureSkipVerify: true,
-				ServerName:         "test",
+				InsecureSkipVerify: boolPtr(true),
+				ServerName:         stringPtr("test"),
 			},
 			hasErr:     false,
 			serverName: "test",
@@ -196,7 +206,7 @@ func TestGenerateSafeTLSConfig(t *testing.T) {
 		{
 			name: "ca_file",
 			tlsConfig: promopv1.SafeTLSConfig{
-				InsecureSkipVerify: true,
+				InsecureSkipVerify: boolPtr(true),
 				CA:                 promopv1.SecretOrConfigMap{Secret: s("secrets", "ca_file")},
 			},
 			hasErr:     false,
@@ -206,7 +216,7 @@ func TestGenerateSafeTLSConfig(t *testing.T) {
 		{
 			name: "ca_file",
 			tlsConfig: promopv1.SafeTLSConfig{
-				InsecureSkipVerify: true,
+				InsecureSkipVerify: boolPtr(true),
 				CA:                 promopv1.SecretOrConfigMap{ConfigMap: cm("non-secrets", "ca_file")},
 			},
 			hasErr:     false,
@@ -216,7 +226,7 @@ func TestGenerateSafeTLSConfig(t *testing.T) {
 		{
 			name: "cert_file",
 			tlsConfig: promopv1.SafeTLSConfig{
-				InsecureSkipVerify: true,
+				InsecureSkipVerify: boolPtr(true),
 				Cert:               promopv1.SecretOrConfigMap{Secret: s("secrets", "cert_file")},
 			},
 			hasErr:     false,
@@ -226,7 +236,7 @@ func TestGenerateSafeTLSConfig(t *testing.T) {
 		{
 			name: "cert_file",
 			tlsConfig: promopv1.SafeTLSConfig{
-				InsecureSkipVerify: true,
+				InsecureSkipVerify: boolPtr(true),
 				Cert:               promopv1.SecretOrConfigMap{ConfigMap: cm("non-secrets", "cert_file")},
 			},
 			hasErr:     false,
@@ -236,7 +246,7 @@ func TestGenerateSafeTLSConfig(t *testing.T) {
 		{
 			name: "key_file",
 			tlsConfig: promopv1.SafeTLSConfig{
-				InsecureSkipVerify: true,
+				InsecureSkipVerify: boolPtr(true),
 				KeySecret:          s("secrets", "key_file"),
 			},
 			hasErr:     false,
@@ -276,9 +286,11 @@ func TestGenerateTLSConfig(t *testing.T) {
 			name: "all_fields",
 			tlsConfig: promopv1.TLSConfig{
 				SafeTLSConfig: promopv1.SafeTLSConfig{},
-				CAFile:        "ca_file",
-				KeyFile:       "key_file",
-				CertFile:      "cert_file",
+				TLSFilesConfig: promopv1.TLSFilesConfig{
+					CAFile:   "ca_file",
+					KeyFile:  "key_file",
+					CertFile: "cert_file",
+				},
 			},
 			hasErr:   false,
 			keyFile:  "key_file",
@@ -289,7 +301,7 @@ func TestGenerateTLSConfig(t *testing.T) {
 			name: "safe gets set",
 			tlsConfig: promopv1.TLSConfig{
 				SafeTLSConfig: promopv1.SafeTLSConfig{
-					InsecureSkipVerify: true,
+					InsecureSkipVerify: boolPtr(true),
 				},
 			},
 			hasErr:   false,
@@ -422,25 +434,66 @@ func TestGenerateAuthorization(t *testing.T) {
 
 func TestGenerateDefaultScrapeConfig(t *testing.T) {
 	tests := []struct {
-		name             string
-		scrapeOptions    operator.ScrapeOptions
-		expectedInterval time.Duration
-		expectedTimeout  time.Duration
+		name                     string
+		scrapeOptions            operator.ScrapeOptions
+		expectedInterval         time.Duration
+		expectedTimeout          time.Duration
+		expectedFallbackProtocol promconfig.ScrapeProtocol
 	}{
 		{
-			name:             "empty",
-			scrapeOptions:    operator.ScrapeOptions{},
-			expectedInterval: 1 * time.Minute,
-			expectedTimeout:  10 * time.Second,
+			name:                     "empty",
+			scrapeOptions:            operator.ScrapeOptions{},
+			expectedInterval:         1 * time.Minute,
+			expectedTimeout:          10 * time.Second,
+			expectedFallbackProtocol: promconfig.PrometheusText0_0_4,
 		},
 		{
 			name: "defaults set",
 			scrapeOptions: operator.ScrapeOptions{
-				DefaultScrapeInterval: 30 * time.Second,
-				DefaultScrapeTimeout:  5 * time.Second,
+				DefaultScrapeInterval:  30 * time.Second,
+				DefaultScrapeTimeout:   5 * time.Second,
+				DefaultSampleLimit:     100,
+				ScrapeNativeHistograms: true,
 			},
-			expectedInterval: 30 * time.Second,
-			expectedTimeout:  5 * time.Second,
+			expectedInterval:         30 * time.Second,
+			expectedTimeout:          5 * time.Second,
+			expectedFallbackProtocol: promconfig.PrometheusText0_0_4,
+		},
+		{
+			name: "scrape classic histograms",
+			scrapeOptions: operator.ScrapeOptions{
+				ScrapeClassicHistograms: true,
+			},
+			expectedInterval:         1 * time.Minute,
+			expectedTimeout:          10 * time.Second,
+			expectedFallbackProtocol: promconfig.PrometheusText0_0_4,
+		},
+		{
+			name: "convert classic histograms to nhcb",
+			scrapeOptions: operator.ScrapeOptions{
+				ConvertClassicHistogramsToNHCB: true,
+			},
+			expectedInterval:         1 * time.Minute,
+			expectedTimeout:          10 * time.Second,
+			expectedFallbackProtocol: promconfig.PrometheusText0_0_4,
+		},
+		{
+			name: "native histogram bucket limit",
+			scrapeOptions: operator.ScrapeOptions{
+				NativeHistogramBucketLimit: 100,
+			},
+			expectedInterval:         1 * time.Minute,
+			expectedTimeout:          10 * time.Second,
+			expectedFallbackProtocol: promconfig.PrometheusText0_0_4,
+		},
+		{
+			name: "native histogram min bucket factor",
+			scrapeOptions: operator.ScrapeOptions{
+				NativeHistogramMinBucketFactor: 1.1,
+			},
+			expectedInterval:         1 * time.Minute,
+			expectedTimeout:          10 * time.Second,
+			expectedFallbackProtocol: promconfig.PrometheusText0_0_4,
 		},
 	}
 	for _, tt := range tests {
@@ -452,6 +505,13 @@ func TestGenerateDefaultScrapeConfig(t *testing.T) {
 
 			assert.Equal(t, model.Duration(tt.expectedInterval), got.ScrapeInterval)
 			assert.Equal(t, model.Duration(tt.expectedTimeout), got.ScrapeTimeout)
+			assert.Equal(t, tt.expectedFallbackProtocol, got.ScrapeFallbackProtocol)
+			assert.Equal(t, tt.scrapeOptions.DefaultSampleLimit, got.SampleLimit)
+			assert.Equal(t, &tt.scrapeOptions.ScrapeNativeHistograms, got.ScrapeNativeHistograms)
+			assert.Equal(t, &tt.scrapeOptions.ScrapeClassicHistograms, got.AlwaysScrapeClassicHistograms)
+			assert.Equal(t, &tt.scrapeOptions.ConvertClassicHistogramsToNHCB, got.ConvertClassicHistogramsToNHCB)
+			assert.Equal(t, tt.scrapeOptions.NativeHistogramBucketLimit, got.NativeHistogramBucketLimit)
+			assert.Equal(t, tt.scrapeOptions.NativeHistogramMinBucketFactor, got.NativeHistogramMinBucketFactor)
 		})
 	}
 }
@@ -485,14 +545,14 @@ func TestRelabelerAdd(t *testing.T) {
 func TestRelabelerAddFromV1(t *testing.T) {
 	relabeler := &relabeler{}
 
-	cfgs := []*promopv1.RelabelConfig{
+	cfgs := []promopv1.RelabelConfig{
 		{
 			SourceLabels: []promopv1.LabelName{"__meta_kubernetes_pod_label_app"},
-			Separator:    ";",
+			Separator:    stringPtr(";"),
 			TargetLabel:  "app",
 			Regex:        "(.*)",
 			Modulus:      1,
-			Replacement:  "$1",
+			Replacement:  stringPtr("$1"),
 			Action:       "replace",
 		},
 	}

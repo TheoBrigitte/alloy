@@ -11,11 +11,13 @@ import (
 	"github.com/grafana/ckit/shard"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/grafana/alloy/internal/runtime/equality"
 	"github.com/grafana/alloy/syntax"
+	"github.com/grafana/alloy/syntax/alloytypes"
 	"github.com/grafana/alloy/syntax/parser"
 	"github.com/grafana/alloy/syntax/token/builder"
 	"github.com/grafana/alloy/syntax/vm"
@@ -26,7 +28,7 @@ func TestUsingTargetCapsule(t *testing.T) {
 		name                  string
 		inputTarget           map[string]string
 		expression            string
-		decodeInto            interface{}
+		decodeInto            any
 		expectedDecodedString string
 		expectedEvalError     string
 	}
@@ -113,7 +115,7 @@ func TestUsingTargetCapsule(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			target := NewTargetFromMap(tc.inputTarget)
-			scope := vm.NewScope(map[string]interface{}{"t": target})
+			scope := vm.NewScope(map[string]any{"t": target})
 			expr, err := parser.ParseExpression(tc.expression)
 			require.NoError(t, err)
 			eval := vm.New(expr)
@@ -133,7 +135,7 @@ func TestNestedIndexing(t *testing.T) {
 		NewTargetFromMap(map[string]string{"foo": "bar", "boom": "bap"}),
 		NewTargetFromMap(map[string]string{"hip": "hop", "dont": "stop"}),
 	}
-	scope := vm.NewScope(map[string]interface{}{"targets": targets})
+	scope := vm.NewScope(map[string]any{"targets": targets})
 
 	expr, err := parser.ParseExpression(`targets[1]["dont"]`)
 	require.NoError(t, err)
@@ -209,12 +211,97 @@ func TestDecodeMap(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			scope := vm.NewScope(map[string]interface{}{})
+			scope := vm.NewScope(map[string]any{})
 			expr, err := parser.ParseExpression(tc.input)
 			require.NoError(t, err)
 			eval := vm.New(expr)
 			actual := Target{}
 			require.NoError(t, eval.Evaluate(scope, &actual))
+			require.Equal(t, NewTargetFromMap(tc.expected), actual)
+		})
+	}
+}
+
+func TestDecodeMapWithSecretValues(t *testing.T) {
+	// A non-secret OptionalSecret value (such as local.file.<name>.content with
+	// is_secret = false) used as a target value must decode to its underlying
+	// string, not the Go struct's default formatting. A genuine secret is not
+	// usable as a target value and must be rejected rather than leaked into a
+	// label. See https://github.com/grafana/alloy/issues/6163.
+	type testCase struct {
+		name     string
+		input    string
+		scope    map[string]any
+		expected map[string]string
+		// errContains asserts the rejection came from ConvertFrom rather than
+		// from some unrelated evaluation failure.
+		errContains string
+	}
+
+	secretPtrValue := alloytypes.Secret("10.0.0.1:9090")
+
+	tests := []testCase{
+		{
+			name:     "non-secret OptionalSecret",
+			input:    `{ "__address__" = optional }`,
+			scope:    map[string]any{"optional": alloytypes.OptionalSecret{IsSecret: false, Value: "10.0.0.1:9090"}},
+			expected: map[string]string{"__address__": "10.0.0.1:9090"},
+		},
+		{
+			name:        "secret OptionalSecret",
+			input:       `{ "__address__" = optional }`,
+			scope:       map[string]any{"optional": alloytypes.OptionalSecret{IsSecret: true, Value: "10.0.0.1:9090"}},
+			errContains: "target::ConvertFrom: cannot use a secret as a target value",
+		},
+		{
+			name:        "Secret",
+			input:       `{ "__address__" = secret }`,
+			scope:       map[string]any{"secret": alloytypes.Secret("10.0.0.1:9090")},
+			errContains: "target::ConvertFrom: cannot use a secret as a target value",
+		},
+		{
+			// The syntax layer dereferences pointer capsules before they reach
+			// ConvertFrom, so a pointer must hit the same rejection as a value.
+			name:        "secret OptionalSecret pointer",
+			input:       `{ "__address__" = optional }`,
+			scope:       map[string]any{"optional": &alloytypes.OptionalSecret{IsSecret: true, Value: "10.0.0.1:9090"}},
+			errContains: "target::ConvertFrom: cannot use a secret as a target value",
+		},
+		{
+			name:     "non-secret OptionalSecret pointer",
+			input:    `{ "__address__" = optional }`,
+			scope:    map[string]any{"optional": &alloytypes.OptionalSecret{IsSecret: false, Value: "10.0.0.1:9090"}},
+			expected: map[string]string{"__address__": "10.0.0.1:9090"},
+		},
+		{
+			name:        "Secret pointer",
+			input:       `{ "__address__" = secret }`,
+			scope:       map[string]any{"secret": &secretPtrValue},
+			errContains: "target::ConvertFrom: cannot use a secret as a target value",
+		},
+		{
+			// A typed nil has no value to dereference, so reflection yields a
+			// zero Value. This used to panic before reaching the type switch.
+			name:        "nil OptionalSecret pointer",
+			input:       `{ "__address__" = optional }`,
+			scope:       map[string]any{"optional": (*alloytypes.OptionalSecret)(nil)},
+			errContains: "target::ConvertFrom: cannot convert a nil value to a target value",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			scope := vm.NewScope(tc.scope)
+			expr, err := parser.ParseExpression(tc.input)
+			require.NoError(t, err)
+			eval := vm.New(expr)
+			actual := Target{}
+			err = eval.Evaluate(scope, &actual)
+			if tc.errContains != "" {
+				require.ErrorContains(t, err, tc.errContains)
+				return
+			}
+			require.NoError(t, err)
 			require.Equal(t, NewTargetFromMap(tc.expected), actual)
 		})
 	}
@@ -276,7 +363,7 @@ func TestEncode_Decode_Targets(t *testing.T) {
 				require.NoError(t, err)
 				eval := vm.New(expr)
 				actual := Target{}
-				require.NoError(t, eval.Evaluate(vm.NewScope(map[string]interface{}{}), &actual))
+				require.NoError(t, eval.Evaluate(vm.NewScope(map[string]any{}), &actual))
 				require.Equal(t, NewTargetFromMap(tc.input), actual)
 			})
 
@@ -285,7 +372,7 @@ func TestEncode_Decode_Targets(t *testing.T) {
 				require.NoError(t, err)
 				eval := vm.New(expr)
 				actualMap := map[string]string{}
-				require.NoError(t, eval.Evaluate(vm.NewScope(map[string]interface{}{}), &actualMap))
+				require.NoError(t, eval.Evaluate(vm.NewScope(map[string]any{}), &actualMap))
 				require.Equal(t, tc.input, actualMap)
 			})
 
@@ -294,13 +381,13 @@ func TestEncode_Decode_Targets(t *testing.T) {
 				require.NoError(t, err)
 				eval := vm.New(expr)
 				actualMap := map[string]string{}
-				require.NoError(t, eval.Evaluate(vm.NewScope(map[string]interface{}{}), &actualMap))
+				require.NoError(t, eval.Evaluate(vm.NewScope(map[string]any{}), &actualMap))
 				require.Equal(t, &tc.input, &actualMap)
 			})
 
 			t.Run("decode from target into map via scope", func(t *testing.T) {
 				// If not supported, this would lead to error: target::ConvertInto: conversion to '*map[string]string' is not supported
-				scope := vm.NewScope(map[string]interface{}{"export": NewTargetFromMap(tc.input)})
+				scope := vm.NewScope(map[string]any{"export": NewTargetFromMap(tc.input)})
 				expr, err := parser.ParseExpression("export")
 				require.NoError(t, err)
 				eval := vm.New(expr)
@@ -310,7 +397,7 @@ func TestEncode_Decode_Targets(t *testing.T) {
 			})
 
 			t.Run("decode from map into target via scope", func(t *testing.T) {
-				scope := vm.NewScope(map[string]interface{}{"map": tc.input})
+				scope := vm.NewScope(map[string]any{"map": tc.input})
 				expr, err := parser.ParseExpression("map")
 				require.NoError(t, err)
 				eval := vm.New(expr)
@@ -386,7 +473,7 @@ func TestEncode_Decode_TargetArrays(t *testing.T) {
 
 			// Try decoding now
 			toDecode := strings.TrimPrefix(encoded, "target = ")
-			scope := vm.NewScope(map[string]interface{}{})
+			scope := vm.NewScope(map[string]any{})
 			expr, err := parser.ParseExpression(toDecode)
 			require.NoError(t, err)
 			eval := vm.New(expr)
@@ -478,7 +565,7 @@ func TestDecode_TargetArrays(t *testing.T) {
 				expectedTargets = append(expectedTargets, NewTargetFromMap(m))
 			}
 
-			scope := vm.NewScope(map[string]interface{}{})
+			scope := vm.NewScope(map[string]any{})
 			expr, err := parser.ParseExpression(tc.input)
 			require.NoError(t, err)
 			eval := vm.New(expr)
@@ -835,7 +922,7 @@ func TestHashLargeLabelSets(t *testing.T) {
 	require.Equal(t, uint64(expectedAllLabelsHash), target.HashLabelsWithPredicate(func(key string) bool {
 		return true
 	}))
-	require.Equal(t, uint64(expectedAllLabelsHash), target.PromLabels().Hash()) // check it matches Prometheus algo
+	require.Equal(t, uint64(expectedAllLabelsHash), labels.StableHash(target.PromLabels())) // check it matches Prometheus algo
 
 	var allNonMetaLabels []string
 	target.ForEachLabel(func(k string, v string) bool {

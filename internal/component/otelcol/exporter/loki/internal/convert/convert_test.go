@@ -314,9 +314,9 @@ func TestConsumeLogs(t *testing.T) {
 		t.Run(tc.testName, func(t *testing.T) {
 			logger := util.TestAlloyLogger(t)
 			promReg := prometheus.NewRegistry()
-			receiver := loki.NewLogsReceiverWithChannel(make(chan loki.Entry, maxTestedLogEntries))
+			receiver := loki.NewLogsReceiver(loki.WithChannel(make(chan loki.Entry, maxTestedLogEntries)))
 
-			converter := convert.New(logger, promReg, []loki.LogsReceiver{receiver})
+			converter := convert.New(logger.Slog(), promReg, []loki.LogsReceiver{receiver})
 
 			ctx := t.Context()
 

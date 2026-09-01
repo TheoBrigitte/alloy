@@ -7,21 +7,19 @@ import (
 	"path/filepath"
 )
 
-//go:embed async-profiler-3.0-fa937db-macos.zip
+//go:embed async-profiler-4.5-macos.zip
 var embeddedArchiveData []byte
 
 // bin/asprof
 // lib/libasyncProfiler.dylib
 
-var embeddedArchiveVersion = 300
+var EmbeddedArchive = Archive{data: embeddedArchiveData, format: ArchiveFormatZip}
 
-var EmbeddedArchive = Archive{data: embeddedArchiveData, version: embeddedArchiveVersion, format: ArchiveFormatZip}
-
-func (d *Distribution) LibPath() string {
+func (d Distribution) LibPath() string {
 	return filepath.Join(d.extractedDir, "lib/libasyncProfiler.dylib")
 }
 
-func (p *Profiler) CopyLib(dist *Distribution, pid int) error {
+func (d Distribution) CopyLib(pid int) error {
 	return nil
 }
 

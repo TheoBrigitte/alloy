@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/grafana/alloy/internal/component/pyroscope/write/debuginfo"
+	"github.com/grafana/alloy/internal/component/pyroscope/write/debuginfoclient"
 	"github.com/hashicorp/go-multierror"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/prometheus/model/labels"
@@ -22,6 +24,8 @@ const (
 var NoopAppendable = AppendableFunc(func(_ context.Context, _ labels.Labels, _ []*RawSample) error { return nil })
 
 type Appendable interface {
+	debuginfo.Appender
+
 	Appender() Appender
 }
 
@@ -31,6 +35,7 @@ type Appender interface {
 }
 
 type RawSample struct {
+	ID string
 	// raw_profile is the set of bytes of the pprof profile
 	RawProfile []byte
 }
@@ -52,21 +57,52 @@ type Fanout struct {
 	// children is where to fan out.
 	children []Appendable
 	// ComponentID is what component this belongs to.
-	componentID  string
-	writeLatency prometheus.Histogram
+	componentID    string
+	writeLatency   prometheus.Histogram
+	samplesCounter prometheus.Counter
+}
+
+func (f *Fanout) DebugInfoClients() []*debuginfoclient.Client {
+	f.mut.RLock()
+	defer f.mut.RUnlock()
+	var clients []*debuginfoclient.Client
+	for _, c := range f.children {
+		clients = append(clients, c.DebugInfoClients()...)
+	}
+	return clients
+}
+
+func (f *Fanout) Upload(j debuginfo.UploadJob) {
+	f.mut.RLock()
+	defer f.mut.RUnlock()
+	for _, c := range f.children {
+		c.Upload(j)
+	}
 }
 
 // NewFanout creates a fanout appendable.
 func NewFanout(children []Appendable, componentID string, register prometheus.Registerer) *Fanout {
 	wl := prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name: "pyroscope_fanout_latency",
-		Help: "Write latency for sending to pyroscope profiles",
+		Name:                            "pyroscope_fanout_latency",
+		Help:                            "Write latency for sending to pyroscope profiles",
+		Buckets:                         prometheus.DefBuckets,
+		NativeHistogramBucketFactor:     1.1,
+		NativeHistogramMaxBucketNumber:  100,
+		NativeHistogramMinResetDuration: 1 * time.Hour,
 	})
 	_ = register.Register(wl)
+
+	sc := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pyroscope_forwarded_entries_total",
+		Help: "Total number of samples sent to downstream components.",
+	})
+	_ = register.Register(sc)
+
 	return &Fanout{
-		children:     children,
-		componentID:  componentID,
-		writeLatency: wl,
+		children:       children,
+		componentID:    componentID,
+		writeLatency:   wl,
+		samplesCounter: sc,
 	}
 }
 
@@ -90,9 +126,10 @@ func (f *Fanout) Appender() Appender {
 	defer f.mut.RUnlock()
 
 	app := &appender{
-		children:     make([]Appender, 0),
-		componentID:  f.componentID,
-		writeLatency: f.writeLatency,
+		children:       make([]Appender, 0),
+		componentID:    f.componentID,
+		writeLatency:   f.writeLatency,
+		samplesCounter: f.samplesCounter,
 	}
 	for _, x := range f.children {
 		if x == nil {
@@ -103,12 +140,17 @@ func (f *Fanout) Appender() Appender {
 	return app
 }
 
+func (f *Fanout) String() string {
+	return f.componentID + ".receiver"
+}
+
 var _ Appender = (*appender)(nil)
 
 type appender struct {
-	children     []Appender
-	componentID  string
-	writeLatency prometheus.Histogram
+	children       []Appender
+	componentID    string
+	writeLatency   prometheus.Histogram
+	samplesCounter prometheus.Counter
 }
 
 // Append satisfies the Appender interface.
@@ -117,6 +159,7 @@ func (a *appender) Append(ctx context.Context, labels labels.Labels, samples []*
 	defer func() {
 		a.writeLatency.Observe(time.Since(now).Seconds())
 	}()
+
 	var multiErr error
 	for _, x := range a.children {
 		err := x.Append(ctx, labels, samples)
@@ -124,6 +167,11 @@ func (a *appender) Append(ctx context.Context, labels labels.Labels, samples []*
 			multiErr = multierror.Append(multiErr, err)
 		}
 	}
+
+	if multiErr == nil {
+		a.samplesCounter.Add(float64(len(samples)))
+	}
+
 	return multiErr
 }
 
@@ -149,35 +197,4 @@ func (a *appender) AppendIngest(ctx context.Context, profile *IncomingProfile) e
 		}
 	}
 	return multiErr
-}
-
-type AppendableFunc func(ctx context.Context, labels labels.Labels, samples []*RawSample) error
-
-func (f AppendableFunc) Appender() Appender {
-	return f
-}
-
-func (f AppendableFunc) Append(ctx context.Context, labels labels.Labels, samples []*RawSample) error {
-	return f(ctx, labels, samples)
-}
-
-func (f AppendableFunc) AppendIngest(_ context.Context, _ *IncomingProfile) error {
-	// This is a no-op implementation
-	return nil
-}
-
-// For testing AppendIngest operations
-type AppendableIngestFunc func(ctx context.Context, profile *IncomingProfile) error
-
-func (f AppendableIngestFunc) Appender() Appender {
-	return f
-}
-
-func (f AppendableIngestFunc) AppendIngest(ctx context.Context, p *IncomingProfile) error {
-	return f(ctx, p)
-}
-
-func (f AppendableIngestFunc) Append(_ context.Context, _ labels.Labels, _ []*RawSample) error {
-	// This is a no-op implementation
-	return nil
 }

@@ -8,17 +8,17 @@ import (
 	"sync"
 
 	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/exp/api/remote"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/prometheus/storage"
+	promremote "github.com/prometheus/prometheus/storage/remote"
+
 	"github.com/grafana/alloy/internal/component"
 	fnet "github.com/grafana/alloy/internal/component/common/net"
 	alloyprom "github.com/grafana/alloy/internal/component/prometheus"
 	"github.com/grafana/alloy/internal/featuregate"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 	"github.com/grafana/alloy/internal/service/labelstore"
 	"github.com/grafana/alloy/internal/util"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/prometheus/config"
-	"github.com/prometheus/prometheus/storage"
-	"github.com/prometheus/prometheus/storage/remote"
 )
 
 func init() {
@@ -36,12 +36,20 @@ func init() {
 type Arguments struct {
 	Server    *fnet.ServerConfig   `alloy:",squash"`
 	ForwardTo []storage.Appendable `alloy:"forward_to,attr"`
+
+	// Whether the metric metadata should be passed to the downstream components.
+	AppendMetadata bool `alloy:"append_metadata,attr,optional"`
+	// Whether the metric type and unit should be added as labels
+	EnableTypeAndUnitLabels bool `alloy:"enable_type_and_unit_labels,attr,optional"`
+	// Supported remote write protobuf message types. Valid values are "prometheus.WriteRequest" and "io.prometheus.write.v2.Request".
+	AcceptedRemoteWriteProtobufMessages []string `alloy:"accepted_remote_write_protobuf_messages,attr,optional"`
 }
 
 // SetToDefault implements syntax.Defaulter.
 func (args *Arguments) SetToDefault() {
 	*args = Arguments{
-		Server: fnet.DefaultServerConfig(),
+		Server:                              fnet.DefaultServerConfig(),
+		AcceptedRemoteWriteProtobufMessages: []string{string(remote.WriteV1MessageType)},
 	}
 }
 
@@ -64,15 +72,47 @@ func New(opts component.Options, args Arguments) (*Component, error) {
 	ls := service.(labelstore.LabelStore)
 	fanout := alloyprom.NewFanout(args.ForwardTo, opts.ID, opts.Registerer, ls)
 
+	if args.AppendMetadata && !opts.MinStability.Permits(featuregate.StabilityExperimental) {
+		return nil, fmt.Errorf("append_metadata is an experimental feature, and must be enabled by setting the stability.level flag to experimental")
+	}
+	if args.EnableTypeAndUnitLabels && !opts.MinStability.Permits(featuregate.StabilityExperimental) {
+		return nil, fmt.Errorf("enable_type_and_unit_labels is an experimental feature, and must be enabled by setting the stability.level flag to experimental")
+	}
+
 	uncheckedCollector := util.NewUncheckedCollector(nil)
 	opts.Registerer.MustRegister(uncheckedCollector)
 
-	//TODO: Make this configurable in the future?
-	supportedRemoteWriteProtoMsgs := config.RemoteWriteProtoMsgs{config.RemoteWriteProtoMsgV1}
+	if len(args.AcceptedRemoteWriteProtobufMessages) == 0 {
+		return nil, fmt.Errorf("accepted_remote_write_protobuf_messages must not be empty")
+	}
+
+	supportedRemoteWriteProtoMsgs := remote.MessageTypes{}
+	for _, version := range args.AcceptedRemoteWriteProtobufMessages {
+		switch version {
+		case string(remote.WriteV1MessageType):
+			supportedRemoteWriteProtoMsgs = append(supportedRemoteWriteProtoMsgs, remote.WriteV1MessageType)
+		case string(remote.WriteV2MessageType):
+			if !opts.MinStability.Permits(featuregate.StabilityExperimental) {
+				return nil, fmt.Errorf("using %q in supported_protocol_versions is an experimental feature, and must be enabled by setting the stability.level flag to experimental", remote.WriteV2MessageType)
+			}
+			supportedRemoteWriteProtoMsgs = append(supportedRemoteWriteProtoMsgs, remote.WriteV2MessageType)
+		default:
+			return nil, fmt.Errorf("unsupported protocol version %q: valid values are %q and %q", version, remote.WriteV1MessageType, remote.WriteV2MessageType)
+		}
+	}
 
 	c := &Component{
-		opts:               opts,
-		handler:            remote.NewWriteHandler(opts.Logger, opts.Registerer, fanout, supportedRemoteWriteProtoMsgs),
+		opts: opts,
+		handler: promremote.NewWriteHandler(
+			opts.Logger,
+			opts.Registerer,
+			fanout,
+			supportedRemoteWriteProtoMsgs,
+			// This is for ingestCTZeroSample which was deprecated in favor of a new StartTime behavior that has not been implemented yet
+			false,
+			args.EnableTypeAndUnitLabels,
+			args.AppendMetadata,
+		),
 		fanout:             fanout,
 		uncheckedCollector: uncheckedCollector,
 	}
@@ -85,6 +125,7 @@ func New(opts component.Options, args Arguments) (*Component, error) {
 
 // Run satisfies the Component interface.
 func (c *Component) Run(ctx context.Context) error {
+	defer c.fanout.Clear()
 	defer func() {
 		c.updateMut.Lock()
 		defer c.updateMut.Unlock()
@@ -92,7 +133,7 @@ func (c *Component) Run(ctx context.Context) error {
 	}()
 
 	<-ctx.Done()
-	level.Info(c.opts.Logger).Log("msg", "terminating due to context done")
+	c.opts.Logger.Info("terminating due to context done")
 	return nil
 }
 

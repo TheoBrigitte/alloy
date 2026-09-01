@@ -6,18 +6,14 @@ discovery.azure "fun" {
 		tenant_id     = "tenant"
 		client_secret = "secret"
 	}
-
-	managed_identity {
-		client_id = "client"
-	}
-}
-
-local.file_match "fun" {
-	path_targets = discovery.azure.fun.targets
 }
 
 loki.source.file "fun" {
-	targets               = local.file_match.fun.targets
-	forward_to            = []
+	targets    = discovery.azure.fun.targets
+	forward_to = []
+
+	file_match {
+		enabled = true
+	}
 	legacy_positions_file = "/var/log/positions.yaml"
 }

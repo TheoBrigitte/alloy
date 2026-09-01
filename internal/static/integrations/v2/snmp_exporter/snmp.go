@@ -3,27 +3,28 @@ package snmp_exporter_v2
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path"
 
 	"github.com/gorilla/mux"
-	"github.com/grafana/alloy/internal/static/integrations/snmp_exporter"
-	"github.com/grafana/alloy/internal/static/integrations/v2"
-	"github.com/grafana/alloy/internal/static/integrations/v2/autoscrape"
-	"github.com/grafana/alloy/internal/static/integrations/v2/metricsutils"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/discovery"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
-
-	"github.com/go-kit/log"
+	"github.com/prometheus/prometheus/model/labels"
 	snmp_config "github.com/prometheus/snmp_exporter/config"
+
+	"github.com/grafana/alloy/internal/static/integrations/snmp_exporter"
+	"github.com/grafana/alloy/internal/static/integrations/v2"
+	"github.com/grafana/alloy/internal/static/integrations/v2/autoscrape"
+	"github.com/grafana/alloy/internal/static/integrations/v2/metricsutils"
 )
 
 type snmpHandler struct {
 	cfg     *Config
 	snmpCfg *snmp_config.Config
-	log     log.Logger
+	log     *slog.Logger
 }
 
 func (sh *snmpHandler) Targets(ep integrations.Endpoint) []*targetgroup.Group {
@@ -44,9 +45,9 @@ func (sh *snmpHandler) Targets(ep integrations.Endpoint) []*targetgroup.Group {
 		Source: fmt.Sprintf("%s/%s", sh.cfg.Name(), sh.cfg.Name()),
 	}
 
-	for _, lbl := range sh.cfg.Common.ExtraLabels {
+	sh.cfg.Common.ExtraLabels.Range(func(lbl labels.Label) {
 		group.Labels[model.LabelName(lbl.Name)] = model.LabelValue(lbl.Value)
-	}
+	})
 
 	for _, t := range sh.cfg.SnmpTargets {
 		labelSet := model.LabelSet{

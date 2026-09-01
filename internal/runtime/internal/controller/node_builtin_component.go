@@ -12,12 +12,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-kit/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/grafana/alloy/internal/component"
 	"github.com/grafana/alloy/internal/featuregate"
+	"github.com/grafana/alloy/internal/nodeconf/importsource"
 	"github.com/grafana/alloy/internal/runtime/equality"
 	"github.com/grafana/alloy/internal/runtime/logging"
 	"github.com/grafana/alloy/internal/runtime/tracing"
@@ -82,8 +82,11 @@ type ComponentGlobals struct {
 	Registerer           prometheus.Registerer                            // Registerer for serving Alloy and component metrics
 	ControllerID         string                                           // ID of controller.
 	NewModuleController  func(opts ModuleControllerOpts) ModuleController // Func to generate a module controller.
-	GetServiceData       func(name string) (interface{}, error)           // Get data for a service.
+	GetServiceData       func(name string) (any, error)                   // Get data for a service.
 	EnableCommunityComps bool                                             // Enables the use of community components.
+
+	// OnImportContent is a hook that is invoked with the parsed content of every imported module.
+	OnImportContent importsource.ImportContentHook
 }
 
 // BuiltinComponentNode is a controller node which manages a builtin component.
@@ -184,7 +187,7 @@ func getManagedOptions(globals ComponentGlobals, cn *BuiltinComponentNode) compo
 	parent, id := splitPath(cn.globalID)
 	return component.Options{
 		ID:     cn.globalID,
-		Logger: log.With(globals.Logger, "component_path", parent, "component_id", id),
+		Logger: globals.Logger.Slog().With("component_path", parent, "component_id", id),
 		Registerer: prometheus.WrapRegistererWith(prometheus.Labels{
 			"component_path": parent,
 			"component_id":   id,
@@ -196,7 +199,7 @@ func getManagedOptions(globals ComponentGlobals, cn *BuiltinComponentNode) compo
 		OnStateChange:    cn.setExports,
 		ModuleController: cn.moduleController,
 
-		GetServiceData: func(name string) (interface{}, error) {
+		GetServiceData: func(name string) (any, error) {
 			return globals.GetServiceData(name)
 		},
 
@@ -423,7 +426,7 @@ func (cn *BuiltinComponentNode) CurrentHealth() component.Health {
 }
 
 // DebugInfo returns debugging information from the managed component (if any).
-func (cn *BuiltinComponentNode) DebugInfo() interface{} {
+func (cn *BuiltinComponentNode) DebugInfo() any {
 	cn.mut.RLock()
 	defer cn.mut.RUnlock()
 

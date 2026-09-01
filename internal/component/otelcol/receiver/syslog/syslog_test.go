@@ -7,23 +7,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/grafana/dskit/backoff"
+	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/pdata/plog"
+
 	"github.com/grafana/alloy/internal/component/otelcol"
 	"github.com/grafana/alloy/internal/component/otelcol/internal/fakeconsumer"
 	"github.com/grafana/alloy/internal/component/otelcol/receiver/syslog"
 	"github.com/grafana/alloy/internal/runtime/componenttest"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 	"github.com/grafana/alloy/internal/util"
 	"github.com/grafana/alloy/syntax"
-	"github.com/grafana/dskit/backoff"
-	"github.com/phayes/freeport"
-	"github.com/stretchr/testify/require"
-	"go.opentelemetry.io/collector/pdata/plog"
 )
 
 // Test performs a basic integration test which runs the otelcol.receiver.syslog
 // component and ensures that it can receive and forward data.
 func Test(t *testing.T) {
-	tcp := getFreeAddr(t)
+	tcp := componenttest.GetFreeAddr(t)
 
 	ctx := componenttest.TestContext(t)
 	l := util.TestLogger(t)
@@ -80,7 +79,7 @@ func Test(t *testing.T) {
 		})
 		for bo.Ongoing() {
 			if err := request(); err != nil {
-				level.Error(l).Log("msg", "failed to send logs", "err", err)
+				l.Error("failed to send logs", "err", err)
 				bo.Wait()
 				continue
 			}
@@ -115,15 +114,6 @@ func makeLogsOutput(ch chan plog.Logs) *otelcol.ConsumerArguments {
 	return &otelcol.ConsumerArguments{
 		Logs: []otelcol.Consumer{&logsConsumer},
 	}
-}
-
-func getFreeAddr(t *testing.T) string {
-	t.Helper()
-
-	portNumber, err := freeport.GetFreePort()
-	require.NoError(t, err)
-
-	return fmt.Sprintf("127.0.0.1:%d", portNumber)
 }
 
 func TestUnmarshal(t *testing.T) {
@@ -179,7 +169,28 @@ func TestUnmarshal(t *testing.T) {
 		}
 	`
 	var args syslog.Arguments
-	err := syntax.Unmarshal([]byte(alloyCfg), &args)
+	require.NoError(t, syntax.Unmarshal([]byte(alloyCfg), &args))
+	_, err := args.Convert()
+	require.NoError(t, err)
+
+	alloyTCP := `
+		tcp {
+			listen_address = "localhost:1514"
+		}
+		output {}
+	`
+	require.NoError(t, syntax.Unmarshal([]byte(alloyTCP), &args))
+	_, err = args.Convert()
+	require.NoError(t, err)
+
+	alloyUDP := `
+		udp {
+			listen_address = "localhost:1514"
+		}
+		output {}
+	`
+	require.NoError(t, syntax.Unmarshal([]byte(alloyUDP), &args))
+	_, err = args.Convert()
 	require.NoError(t, err)
 }
 

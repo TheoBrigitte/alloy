@@ -2,15 +2,14 @@ package processortest
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 
-	"github.com/go-kit/log"
 	"github.com/grafana/alloy/internal/component"
 	"github.com/grafana/alloy/internal/component/otelcol"
 	"github.com/grafana/alloy/internal/component/otelcol/internal/fakeconsumer"
 	"github.com/grafana/alloy/internal/runtime/componenttest"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 	"github.com/grafana/dskit/backoff"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/plog"
@@ -30,13 +29,16 @@ type Signal interface {
 }
 
 type ProcessorRunConfig struct {
-	Ctx        context.Context
-	T          *testing.T
-	Args       component.Arguments
-	TestSignal Signal
-	Ctrl       *componenttest.Controller
-	L          log.Logger
+	Ctx                   context.Context
+	T                     *testing.T
+	Args                  component.Arguments
+	TestSignal            Signal
+	AdditionalSignalSends int
+	Ctrl                  *componenttest.Controller
+	L                     *slog.Logger
 }
+
+const signalOutputTimeout = 3 * time.Second
 
 func TestRunProcessor(c ProcessorRunConfig) {
 	go func() {
@@ -44,8 +46,8 @@ func TestRunProcessor(c ProcessorRunConfig) {
 		require.NoError(c.T, err)
 	}()
 
-	require.NoError(c.T, c.Ctrl.WaitRunning(time.Second), "component never started")
-	require.NoError(c.T, c.Ctrl.WaitExports(time.Second), "component never exported anything")
+	require.NoError(c.T, c.Ctrl.WaitRunning(0), "component never started")
+	require.NoError(c.T, c.Ctrl.WaitExports(0), "component never exported anything")
 
 	// Send signals in the background to our processor.
 	go func() {
@@ -56,13 +58,14 @@ func TestRunProcessor(c ProcessorRunConfig) {
 			MaxBackoff: 100 * time.Millisecond,
 		})
 		for bo.Ongoing() {
-			err := c.TestSignal.ConsumeInput(c.Ctx, exports.Input)
-			if err != nil {
-				level.Error(c.L).Log("msg", "failed to send signal", "err", err)
-				bo.Wait()
-				continue
+			for i := 0; i <= c.AdditionalSignalSends; i++ {
+				err := c.TestSignal.ConsumeInput(c.Ctx, exports.Input)
+				if err != nil {
+					c.L.Error("failed to send signal", "err", err)
+					bo.Wait()
+					continue
+				}
 			}
-
 			return
 		}
 	}()
@@ -99,7 +102,7 @@ func (s traceToLogSignal) ConsumeInput(ctx context.Context, consumer otelcol.Con
 func (s traceToLogSignal) CheckOutput(t *testing.T) {
 	// Wait for our processor to finish and forward data to logCh.
 	select {
-	case <-time.After(time.Second):
+	case <-time.After(signalOutputTimeout):
 		require.FailNow(t, "failed waiting for logs")
 	case actualLog := <-s.logCh:
 		CompareLogs(t, s.expectedOutputLog, actualLog)
@@ -138,13 +141,30 @@ func (s traceToMetricSignal) CheckOutput(t *testing.T) {
 	// Set the timeout to a few seconds so that all components have finished.
 	// Components such as otelcol.connector.spanmetrics may need a few
 	// seconds before they output metrics.
-	timeout := time.Second * 5
+	timeoutCh := time.After(time.Second * 5)
+	latestReceived := ""
 
-	select {
-	case <-time.After(timeout):
-		require.FailNow(t, "failed waiting for metrics")
-	case actualMetric := <-s.metricCh:
-		CompareMetrics(t, s.expectedOutputMetric, actualMetric)
+	for {
+		select {
+		case <-timeoutCh:
+			require.FailNow(t, "failed waiting for the required metrics", "latest received: %s", latestReceived)
+			return
+		case actualMetric := <-s.metricCh:
+			jsonMarshaler := pmetric.JSONMarshaler{}
+			metricsBuf, err := jsonMarshaler.MarshalMetrics(actualMetric)
+			require.NoError(t, err)
+			metricsStr := string(metricsBuf)
+			t.Logf("actual metrics: %s", metricsStr)
+			latestReceived = metricsStr
+
+			err = CompareMetrics(t, s.expectedOutputMetric, actualMetric)
+			if err == nil {
+				// The expected metrics were received - return.
+				t.Logf("received the expected metric")
+				return
+			}
+			t.Logf("received a metric which is NOT the expected one")
+		}
 	}
 }
 
@@ -177,7 +197,7 @@ func (s traceSignal) ConsumeInput(ctx context.Context, consumer otelcol.Consumer
 func (s traceSignal) CheckOutput(t *testing.T) {
 	// Wait for our processor to finish and forward data to traceCh.
 	select {
-	case <-time.After(time.Second):
+	case <-time.After(signalOutputTimeout):
 		require.FailNow(t, "failed waiting for traces")
 	case actualTrace := <-s.traceCh:
 		CompareTraces(t, s.expectedOutputTrace, actualTrace)
@@ -243,7 +263,7 @@ func (s logSignal) ConsumeInput(ctx context.Context, consumer otelcol.Consumer) 
 func (s logSignal) CheckOutput(t *testing.T) {
 	// Wait for our processor to finish and forward data to logCh.
 	select {
-	case <-time.After(time.Second):
+	case <-time.After(signalOutputTimeout):
 		require.FailNow(t, "failed waiting for logs")
 	case actualLog := <-s.logCh:
 		CompareLogs(t, s.expectedOutputLog, actualLog)
@@ -309,10 +329,11 @@ func (s metricSignal) ConsumeInput(ctx context.Context, consumer otelcol.Consume
 func (s metricSignal) CheckOutput(t *testing.T) {
 	// Wait for our processor to finish and forward data to logCh.
 	select {
-	case <-time.After(time.Second):
+	case <-time.After(signalOutputTimeout):
 		require.FailNow(t, "failed waiting for logs")
 	case actualMetric := <-s.metricCh:
-		CompareMetrics(t, s.expectedOutputMetric, actualMetric)
+		err := CompareMetrics(t, s.expectedOutputMetric, actualMetric)
+		require.NoError(t, err)
 	}
 }
 

@@ -43,6 +43,9 @@ func (args *Arguments) SetToDefault() {
 		HTTPServer: otelcol.HTTPServerArguments{
 			Endpoint:              "localhost:8086",
 			CompressionAlgorithms: append([]string(nil), otelcol.DefaultCompressionAlgorithms...),
+			IdleTimeout:           otelcol.DefaultHTTPServerIdleTimeout,
+			ReadHeaderTimeout:     otelcol.DefaultHTTPServerReadHeaderTimeout,
+			WriteTimeout:          otelcol.DefaultHTTPServerWriteTimeout,
 		},
 	}
 	args.DebugMetrics.SetToDefault()
@@ -64,7 +67,7 @@ func (args Arguments) Convert() (otelcomponent.Config, error) {
 	}
 
 	return &influxdbreceiver.Config{
-		ServerConfig: *serverConfig,
+		ServerConfig: *serverConfig.Get(),
 	}, nil
 }
 

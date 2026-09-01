@@ -4,7 +4,10 @@ otelcol.receiver.otlp "default" {
 	}
 
 	http {
-		endpoint = "localhost:4318"
+		endpoint            = "localhost:4318"
+		idle_timeout        = "0s"
+		write_timeout       = "0s"
+		read_header_timeout = "0s"
 	}
 
 	output {
@@ -30,10 +33,11 @@ otelcol.connector.servicegraph "default" {
 		max_items = 10
 		ttl       = "1s"
 	}
-	cache_loop              = "2m0s"
-	store_expiration_loop   = "5s"
-	metrics_flush_interval  = "3m0s"
-	database_name_attribute = "db_name3"
+	cache_loop                   = "2m0s"
+	store_expiration_loop        = "5s"
+	virtual_node_peer_attributes = ["example_attribute"]
+	metrics_flush_interval       = "3m0s"
+	database_name_attributes     = ["db_name3", "db_name4"]
 
 	output {
 		metrics = [otelcol.exporter.otlp.default.input]

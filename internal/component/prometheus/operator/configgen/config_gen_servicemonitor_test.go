@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alecthomas/units"
 	promopv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	commonConfig "github.com/prometheus/common/config"
 	"github.com/prometheus/common/model"
@@ -27,8 +28,11 @@ import (
 )
 
 func TestGenerateServiceMonitorConfig(t *testing.T) {
-	var falseVal = false
-	var proxyURL = "https://proxy:8080"
+	var (
+		falsePtr    = ptr.To(false)
+		proxyURL    = "https://proxy:8080"
+		httpsScheme = promopv1.Scheme("https")
+	)
 	suite := []struct {
 		name                   string
 		m                      *promopv1.ServiceMonitor
@@ -78,14 +82,21 @@ func TestGenerateServiceMonitorConfig(t *testing.T) {
 				  replacement: ${1}
 			`),
 			expected: &config.ScrapeConfig{
-				JobName:           "serviceMonitor/operator/svcmonitor/1",
-				HonorTimestamps:   true,
-				ScrapeInterval:    model.Duration(time.Minute),
-				ScrapeTimeout:     model.Duration(10 * time.Second),
-				ScrapeProtocols:   config.DefaultScrapeProtocols,
-				EnableCompression: true,
-				MetricsPath:       "/metrics",
-				Scheme:            "http",
+				JobName:                        "serviceMonitor/operator/svcmonitor/1",
+				HonorTimestamps:                true,
+				ScrapeInterval:                 model.Duration(time.Minute),
+				ScrapeTimeout:                  model.Duration(10 * time.Second),
+				ScrapeProtocols:                config.DefaultScrapeProtocols,
+				ScrapeFallbackProtocol:         config.PrometheusText0_0_4,
+				ExtraScrapeMetrics:             falsePtr,
+				ScrapeNativeHistograms:         falsePtr,
+				AlwaysScrapeClassicHistograms:  falsePtr,
+				ConvertClassicHistogramsToNHCB: falsePtr,
+				EnableCompression:              true,
+				MetricsPath:                    "/metrics",
+				Scheme:                         "http",
+				MetricNameValidationScheme:     model.LegacyValidation,
+				MetricNameEscapingScheme:       model.UnderscoreEscaping.String(),
 				HTTPClientConfig: commonConfig.HTTPClientConfig{
 					FollowRedirects: true,
 					EnableHTTP2:     true,
@@ -149,14 +160,21 @@ func TestGenerateServiceMonitorConfig(t *testing.T) {
 				  replacement: http_metrics
 			`),
 			expected: &config.ScrapeConfig{
-				JobName:           "serviceMonitor/operator/svcmonitor/1",
-				HonorTimestamps:   true,
-				ScrapeInterval:    model.Duration(time.Minute),
-				ScrapeTimeout:     model.Duration(10 * time.Second),
-				ScrapeProtocols:   config.DefaultScrapeProtocols,
-				EnableCompression: true,
-				MetricsPath:       "/metrics",
-				Scheme:            "http",
+				JobName:                        "serviceMonitor/operator/svcmonitor/1",
+				HonorTimestamps:                true,
+				ScrapeInterval:                 model.Duration(time.Minute),
+				ScrapeTimeout:                  model.Duration(10 * time.Second),
+				ExtraScrapeMetrics:             falsePtr,
+				ScrapeProtocols:                config.DefaultScrapeProtocols,
+				ScrapeFallbackProtocol:         config.PrometheusText0_0_4,
+				ScrapeNativeHistograms:         falsePtr,
+				AlwaysScrapeClassicHistograms:  falsePtr,
+				ConvertClassicHistogramsToNHCB: falsePtr,
+				EnableCompression:              true,
+				MetricsPath:                    "/metrics",
+				Scheme:                         "http",
+				MetricNameValidationScheme:     model.LegacyValidation,
+				MetricNameEscapingScheme:       model.UnderscoreEscaping.String(),
 				HTTPClientConfig: commonConfig.HTTPClientConfig{
 					FollowRedirects: true,
 					EnableHTTP2:     true,
@@ -220,14 +238,21 @@ func TestGenerateServiceMonitorConfig(t *testing.T) {
 				  replacement: "4242"
 			`),
 			expected: &config.ScrapeConfig{
-				JobName:           "serviceMonitor/operator/svcmonitor/1",
-				HonorTimestamps:   true,
-				ScrapeInterval:    model.Duration(time.Minute),
-				ScrapeTimeout:     model.Duration(10 * time.Second),
-				ScrapeProtocols:   config.DefaultScrapeProtocols,
-				EnableCompression: true,
-				MetricsPath:       "/metrics",
-				Scheme:            "http",
+				JobName:                        "serviceMonitor/operator/svcmonitor/1",
+				HonorTimestamps:                true,
+				ScrapeInterval:                 model.Duration(time.Minute),
+				ScrapeTimeout:                  model.Duration(10 * time.Second),
+				ScrapeProtocols:                config.DefaultScrapeProtocols,
+				ScrapeFallbackProtocol:         config.PrometheusText0_0_4,
+				ExtraScrapeMetrics:             falsePtr,
+				ScrapeNativeHistograms:         falsePtr,
+				AlwaysScrapeClassicHistograms:  falsePtr,
+				ConvertClassicHistogramsToNHCB: falsePtr,
+				EnableCompression:              true,
+				MetricsPath:                    "/metrics",
+				Scheme:                         "http",
+				MetricNameValidationScheme:     model.LegacyValidation,
+				MetricNameEscapingScheme:       model.UnderscoreEscaping.String(),
 				HTTPClientConfig: commonConfig.HTTPClientConfig{
 					FollowRedirects: true,
 					EnableHTTP2:     true,
@@ -291,14 +316,21 @@ func TestGenerateServiceMonitorConfig(t *testing.T) {
 				  replacement: "4242"
 			`),
 			expected: &config.ScrapeConfig{
-				JobName:           "serviceMonitor/operator/svcmonitor/1",
-				HonorTimestamps:   true,
-				ScrapeInterval:    model.Duration(time.Minute),
-				ScrapeTimeout:     model.Duration(10 * time.Second),
-				ScrapeProtocols:   config.DefaultScrapeProtocols,
-				EnableCompression: true,
-				MetricsPath:       "/metrics",
-				Scheme:            "http",
+				JobName:                        "serviceMonitor/operator/svcmonitor/1",
+				HonorTimestamps:                true,
+				ScrapeInterval:                 model.Duration(time.Minute),
+				ScrapeTimeout:                  model.Duration(10 * time.Second),
+				ScrapeProtocols:                config.DefaultScrapeProtocols,
+				ScrapeFallbackProtocol:         config.PrometheusText0_0_4,
+				ExtraScrapeMetrics:             falsePtr,
+				ScrapeNativeHistograms:         falsePtr,
+				AlwaysScrapeClassicHistograms:  falsePtr,
+				ConvertClassicHistogramsToNHCB: falsePtr,
+				EnableCompression:              true,
+				MetricsPath:                    "/metrics",
+				Scheme:                         "http",
+				MetricNameValidationScheme:     model.LegacyValidation,
+				MetricNameEscapingScheme:       model.UnderscoreEscaping.String(),
 				HTTPClientConfig: commonConfig.HTTPClientConfig{
 					FollowRedirects: true,
 					EnableHTTP2:     true,
@@ -349,35 +381,47 @@ func TestGenerateServiceMonitorConfig(t *testing.T) {
 							},
 						},
 					},
+					ScrapeProtocols: []promopv1.ScrapeProtocol{
+						promopv1.ScrapeProtocol(config.PrometheusProto),
+					},
 					NamespaceSelector:     promopv1.NamespaceSelector{Any: false, MatchNames: []string{"ns_a", "ns_b"}},
 					SampleLimit:           ptr.To(uint64(101)),
 					TargetLimit:           ptr.To(uint64(102)),
 					LabelLimit:            ptr.To(uint64(103)),
 					LabelNameLengthLimit:  ptr.To(uint64(104)),
 					LabelValueLengthLimit: ptr.To(uint64(105)),
-					AttachMetadata:        &promopv1.AttachMetadata{Node: true},
+					AttachMetadata:        &promopv1.AttachMetadata{Node: boolPtr(true)},
+					BodySizeLimit:         ptr.To(promopv1.ByteSize("15MiB")),
 				},
 			},
 			ep: promopv1.Endpoint{
 				Port:            "metrics",
-				EnableHttp2:     &falseVal,
 				Path:            "/foo",
 				Params:          map[string][]string{"a": {"b"}},
-				FollowRedirects: &falseVal,
-				ProxyURL:        &proxyURL,
-				Scheme:          "https",
+				Scheme:          &httpsScheme,
 				ScrapeTimeout:   "17s",
 				Interval:        "12m",
 				HonorLabels:     true,
-				HonorTimestamps: &falseVal,
-				FilterRunning:   &falseVal,
-				TLSConfig: &promopv1.TLSConfig{
-					SafeTLSConfig: promopv1.SafeTLSConfig{
-						ServerName:         "foo.com",
-						InsecureSkipVerify: true,
+				HonorTimestamps: falsePtr,
+				FilterRunning:   falsePtr,
+				HTTPConfigWithProxyAndTLSFiles: promopv1.HTTPConfigWithProxyAndTLSFiles{
+					HTTPConfigWithTLSFiles: promopv1.HTTPConfigWithTLSFiles{
+						HTTPConfigWithoutTLS: promopv1.HTTPConfigWithoutTLS{
+							EnableHTTP2:     falsePtr,
+							FollowRedirects: falsePtr,
+						},
+						TLSConfig: &promopv1.TLSConfig{
+							SafeTLSConfig: promopv1.SafeTLSConfig{
+								ServerName:         stringPtr("foo.com"),
+								InsecureSkipVerify: boolPtr(true),
+							},
+						},
+					},
+					ProxyConfig: promopv1.ProxyConfig{
+						ProxyURL: &proxyURL,
 					},
 				},
-				RelabelConfigs: []*promopv1.RelabelConfig{
+				RelabelConfigs: []promopv1.RelabelConfig{
 					{
 						SourceLabels: []promopv1.LabelName{"foo"},
 						TargetLabel:  "bar",
@@ -461,14 +505,15 @@ func TestGenerateServiceMonitorConfig(t *testing.T) {
 				Params: url.Values{
 					"a": []string{"b"},
 				},
-				ScrapeInterval:    model.Duration(12 * time.Minute),
-				ScrapeTimeout:     model.Duration(17 * time.Second),
-				ScrapeProtocols:   config.DefaultScrapeProtocols,
-				EnableCompression: true,
-				MetricsPath:       "/foo",
-				Scheme:            "https",
+				ScrapeInterval:         model.Duration(12 * time.Minute),
+				ScrapeTimeout:          model.Duration(17 * time.Second),
+				ScrapeProtocols:        []config.ScrapeProtocol{config.PrometheusProto},
+				ScrapeFallbackProtocol: config.PrometheusText0_0_4,
+				EnableCompression:      true,
+				MetricsPath:            "/foo",
+				Scheme:                 "https",
 				HTTPClientConfig: commonConfig.HTTPClientConfig{
-					FollowRedirects: falseVal,
+					FollowRedirects: false,
 					EnableHTTP2:     false,
 					TLSConfig: commonConfig.TLSConfig{
 						ServerName:         "foo.com",
@@ -488,11 +533,18 @@ func TestGenerateServiceMonitorConfig(t *testing.T) {
 						},
 					},
 				},
-				SampleLimit:           101,
-				TargetLimit:           102,
-				LabelLimit:            103,
-				LabelNameLengthLimit:  104,
-				LabelValueLengthLimit: 105,
+				SampleLimit:                    101,
+				TargetLimit:                    102,
+				LabelLimit:                     103,
+				LabelNameLengthLimit:           104,
+				LabelValueLengthLimit:          105,
+				BodySizeLimit:                  15 * units.MiB,
+				ExtraScrapeMetrics:             falsePtr,
+				ScrapeNativeHistograms:         falsePtr,
+				AlwaysScrapeClassicHistograms:  falsePtr,
+				ConvertClassicHistogramsToNHCB: falsePtr,
+				MetricNameValidationScheme:     model.LegacyValidation,
+				MetricNameEscapingScheme:       model.UnderscoreEscaping.String(),
 			},
 		},
 		{
@@ -504,7 +556,7 @@ func TestGenerateServiceMonitorConfig(t *testing.T) {
 				},
 			},
 			ep: promopv1.Endpoint{
-				MetricRelabelConfigs: []*promopv1.RelabelConfig{
+				MetricRelabelConfigs: []promopv1.RelabelConfig{
 					{
 						SourceLabels: []promopv1.LabelName{"foo"},
 						TargetLabel:  "bar",
@@ -548,14 +600,21 @@ func TestGenerateServiceMonitorConfig(t *testing.T) {
 				  target_label: bar
 			`),
 			expected: &config.ScrapeConfig{
-				JobName:           "serviceMonitor/operator/svcmonitor/1",
-				HonorTimestamps:   true,
-				ScrapeInterval:    model.Duration(time.Minute),
-				ScrapeTimeout:     model.Duration(10 * time.Second),
-				ScrapeProtocols:   config.DefaultScrapeProtocols,
-				EnableCompression: true,
-				MetricsPath:       "/metrics",
-				Scheme:            "http",
+				JobName:                        "serviceMonitor/operator/svcmonitor/1",
+				HonorTimestamps:                true,
+				ScrapeInterval:                 model.Duration(time.Minute),
+				ScrapeTimeout:                  model.Duration(10 * time.Second),
+				ScrapeProtocols:                config.DefaultScrapeProtocols,
+				ScrapeFallbackProtocol:         config.PrometheusText0_0_4,
+				ExtraScrapeMetrics:             falsePtr,
+				ScrapeNativeHistograms:         falsePtr,
+				AlwaysScrapeClassicHistograms:  falsePtr,
+				ConvertClassicHistogramsToNHCB: falsePtr,
+				EnableCompression:              true,
+				MetricsPath:                    "/metrics",
+				Scheme:                         "http",
+				MetricNameValidationScheme:     model.LegacyValidation,
+				MetricNameEscapingScheme:       model.UnderscoreEscaping.String(),
 				HTTPClientConfig: commonConfig.HTTPClientConfig{
 					FollowRedirects: true,
 					EnableHTTP2:     true,
@@ -610,6 +669,124 @@ func TestGenerateServiceMonitorConfig(t *testing.T) {
 			}
 			checkRelabels(rlcs, tc.expectedRelabels)
 			checkRelabels(mrlcs, tc.expectedMetricRelabels)
+		})
+	}
+}
+
+func TestGenerateServiceMonitorConfigArbitraryFileAccess(t *testing.T) {
+	serviceMonitor := &promopv1.ServiceMonitor{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "operator",
+			Name:      "svcmonitor",
+		},
+	}
+
+	tests := []struct {
+		name                     string
+		allowArbitraryFileAccess bool
+		ep                       promopv1.Endpoint
+		expectedBearerTokenFile  string
+		expectedTLSConfig        commonConfig.TLSConfig
+		expectedErr              string
+	}{
+		{
+			name:                     "flag on honors bearer token file",
+			allowArbitraryFileAccess: true,
+			ep: promopv1.Endpoint{
+				BearerTokenFile: "/var/run/secrets/kubernetes.io/serviceaccount/token", //nolint:staticcheck
+			},
+			expectedBearerTokenFile: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+		},
+		{
+			name:                     "flag on honors tls file fields",
+			allowArbitraryFileAccess: true,
+			ep: promopv1.Endpoint{
+				HTTPConfigWithProxyAndTLSFiles: promopv1.HTTPConfigWithProxyAndTLSFiles{
+					HTTPConfigWithTLSFiles: promopv1.HTTPConfigWithTLSFiles{
+						TLSConfig: &promopv1.TLSConfig{
+							TLSFilesConfig: promopv1.TLSFilesConfig{
+								CAFile:   "/etc/prometheus/ca.crt",
+								CertFile: "/etc/prometheus/client.crt",
+								KeyFile:  "/etc/prometheus/client.key",
+							},
+						},
+					},
+				},
+			},
+			expectedTLSConfig: commonConfig.TLSConfig{
+				CAFile:   "/etc/prometheus/ca.crt",
+				CertFile: "/etc/prometheus/client.crt",
+				KeyFile:  "/etc/prometheus/client.key",
+			},
+		},
+		{
+			name: "flag off rejects bearer token file",
+			ep: promopv1.Endpoint{
+				BearerTokenFile: "/var/run/secrets/kubernetes.io/serviceaccount/token", //nolint:staticcheck
+			},
+			expectedErr: "bearerTokenFile, which is disallowed because allow_arbitrary_file_access is false; use bearerTokenSecret or authorization instead",
+		},
+		{
+			name: "flag off rejects tls ca file",
+			ep: promopv1.Endpoint{
+				HTTPConfigWithProxyAndTLSFiles: promopv1.HTTPConfigWithProxyAndTLSFiles{
+					HTTPConfigWithTLSFiles: promopv1.HTTPConfigWithTLSFiles{
+						TLSConfig: &promopv1.TLSConfig{
+							TLSFilesConfig: promopv1.TLSFilesConfig{CAFile: "/etc/prometheus/ca.crt"},
+						},
+					},
+				},
+			},
+			expectedErr: "tlsConfig.caFile, which is disallowed because allow_arbitrary_file_access is false; use tlsConfig.ca instead",
+		},
+		{
+			name: "flag off rejects tls cert file",
+			ep: promopv1.Endpoint{
+				HTTPConfigWithProxyAndTLSFiles: promopv1.HTTPConfigWithProxyAndTLSFiles{
+					HTTPConfigWithTLSFiles: promopv1.HTTPConfigWithTLSFiles{
+						TLSConfig: &promopv1.TLSConfig{
+							TLSFilesConfig: promopv1.TLSFilesConfig{CertFile: "/etc/prometheus/client.crt"},
+						},
+					},
+				},
+			},
+			expectedErr: "tlsConfig.certFile, which is disallowed because allow_arbitrary_file_access is false; use tlsConfig.cert instead",
+		},
+		{
+			name: "flag off rejects tls key file",
+			ep: promopv1.Endpoint{
+				HTTPConfigWithProxyAndTLSFiles: promopv1.HTTPConfigWithProxyAndTLSFiles{
+					HTTPConfigWithTLSFiles: promopv1.HTTPConfigWithTLSFiles{
+						TLSConfig: &promopv1.TLSConfig{
+							TLSFilesConfig: promopv1.TLSFilesConfig{KeyFile: "/etc/prometheus/client.key"},
+						},
+					},
+				},
+			},
+			expectedErr: "tlsConfig.keyFile, which is disallowed because allow_arbitrary_file_access is false; use tlsConfig.keySecret instead",
+		},
+		{
+			name: "flag off allows endpoints without file fields",
+			ep:   promopv1.Endpoint{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cg := &ConfigGenerator{
+				Client:                   &kubernetes.ClientArguments{},
+				AllowArbitraryFileAccess: tc.allowArbitraryFileAccess,
+			}
+
+			cfg, err := cg.GenerateServiceMonitorConfig(serviceMonitor, tc.ep, 0, promk8s.RoleEndpoint)
+			if tc.expectedErr != "" {
+				require.ErrorContains(t, err, tc.expectedErr)
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, tc.expectedBearerTokenFile, cfg.HTTPClientConfig.BearerTokenFile)
+			require.Equal(t, tc.expectedTLSConfig, cfg.HTTPClientConfig.TLSConfig)
 		})
 	}
 }

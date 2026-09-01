@@ -9,7 +9,9 @@ import (
 	otelconfigauth "go.opentelemetry.io/collector/config/configauth"
 	"go.opentelemetry.io/collector/config/configcompression"
 	otelconfighttp "go.opentelemetry.io/collector/config/confighttp"
+	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/config/configopaque"
+	"go.opentelemetry.io/collector/config/configoptional"
 )
 
 // HTTPServerArguments holds shared settings for components which launch HTTP
@@ -29,9 +31,24 @@ type HTTPServerArguments struct {
 	MaxRequestBodySize    units.Base2Bytes `alloy:"max_request_body_size,attr,optional"`
 	IncludeMetadata       bool             `alloy:"include_metadata,attr,optional"`
 	CompressionAlgorithms []string         `alloy:"compression_algorithms,attr,optional"`
+
+	KeepAlivesEnabled *bool `alloy:"keep_alives_enabled,attr,optional"`
+
+	IdleTimeout       time.Duration `alloy:"idle_timeout,attr,optional"`
+	ReadTimeout       time.Duration `alloy:"read_timeout,attr,optional"`
+	WriteTimeout      time.Duration `alloy:"write_timeout,attr,optional"`
+	ReadHeaderTimeout time.Duration `alloy:"read_header_timeout,attr,optional"`
 }
 
 var DefaultCompressionAlgorithms = []string{"", "gzip", "zstd", "zlib", "snappy", "deflate", "lz4"}
+
+// Default HTTP server timeouts, matching otelconfighttp.NewDefaultServerConfig().
+// ReadTimeout has no default upstream (0 = unbounded).
+const (
+	DefaultHTTPServerIdleTimeout       = 1 * time.Minute
+	DefaultHTTPServerReadHeaderTimeout = 1 * time.Minute
+	DefaultHTTPServerWriteTimeout      = 30 * time.Second
+)
 
 func copyStringSlice(s []string) []string {
 	if s == nil {
@@ -41,36 +58,53 @@ func copyStringSlice(s []string) []string {
 }
 
 // Convert converts args into the upstream type.
-func (args *HTTPServerArguments) Convert() (*otelconfighttp.ServerConfig, error) {
+func (args *HTTPServerArguments) Convert() (configoptional.Optional[otelconfighttp.ServerConfig], error) {
 	if args == nil {
-		return nil, nil
+		return configoptional.None[otelconfighttp.ServerConfig](), nil
 	}
 
 	// If auth is set by the user retrieve the associated extension from the handler.
 	// if the extension does not support server auth an error will be returned.
-	var authentication *otelconfighttp.AuthConfig
+	var authentication configoptional.Optional[otelconfighttp.AuthConfig]
 	if args.Authentication != nil {
 		ext, err := args.Authentication.GetExtension(auth.Server)
 		if err != nil {
-			return nil, err
+			return configoptional.None[otelconfighttp.ServerConfig](), err
 		}
 
-		authentication = &otelconfighttp.AuthConfig{
-			Authentication: otelconfigauth.Authentication{
+		authentication = configoptional.Some(otelconfighttp.AuthConfig{
+			Config: otelconfigauth.Config{
 				AuthenticatorID: ext.ID,
 			},
-		}
+		})
 	}
 
-	return &otelconfighttp.ServerConfig{
-		Endpoint:              args.Endpoint,
-		TLSSetting:            args.TLS.Convert(),
+	// Default true boolean
+	keepAliveEnabled := true
+	if args.KeepAlivesEnabled != nil {
+		keepAliveEnabled = *args.KeepAlivesEnabled
+	}
+
+	return configoptional.Some(otelconfighttp.ServerConfig{
+		NetAddr:               confignet.AddrConfig{Endpoint: args.Endpoint, Transport: confignet.TransportTypeTCP},
+		TLS:                   args.TLS.Convert(),
+		KeepAlivesEnabled:     keepAliveEnabled,
 		CORS:                  args.CORS.Convert(),
 		MaxRequestBodySize:    int64(args.MaxRequestBodySize),
 		IncludeMetadata:       args.IncludeMetadata,
 		CompressionAlgorithms: copyStringSlice(args.CompressionAlgorithms),
 		Auth:                  authentication,
-	}, nil
+		IdleTimeout:           args.IdleTimeout,
+		ReadHeaderTimeout:     args.ReadHeaderTimeout,
+		WriteTimeout:          args.WriteTimeout,
+		ReadTimeout:           args.ReadTimeout,
+	}), nil
+}
+
+// Temporary function until all upstream components are converted to use configoptional.Optional.
+func (args *HTTPServerArguments) ConvertToPtr() (*otelconfighttp.ServerConfig, error) {
+	converted, err := args.Convert()
+	return converted.Get(), err
 }
 
 // Extensions exposes extensions used by args.
@@ -92,22 +126,23 @@ func (args *HTTPServerArguments) Extensions() map[otelcomponent.ID]otelcomponent
 type CORSArguments struct {
 	AllowedOrigins []string `alloy:"allowed_origins,attr,optional"`
 	AllowedHeaders []string `alloy:"allowed_headers,attr,optional"`
+	ExposedHeaders []string `alloy:"exposed_headers,attr,optional"`
 
 	MaxAge int `alloy:"max_age,attr,optional"`
 }
 
 // Convert converts args into the upstream type.
-func (args *CORSArguments) Convert() *otelconfighttp.CORSConfig {
+func (args *CORSArguments) Convert() configoptional.Optional[otelconfighttp.CORSConfig] {
 	if args == nil {
-		return nil
+		return configoptional.None[otelconfighttp.CORSConfig]()
 	}
 
-	return &otelconfighttp.CORSConfig{
+	return configoptional.Some(otelconfighttp.CORSConfig{
 		AllowedOrigins: copyStringSlice(args.AllowedOrigins),
 		AllowedHeaders: copyStringSlice(args.AllowedHeaders),
-
-		MaxAge: args.MaxAge,
-	}
+		ExposedHeaders: copyStringSlice(args.ExposedHeaders),
+		MaxAge:         args.MaxAge,
+	})
 }
 
 // HTTPClientArguments holds shared HTTP settings for components which launch
@@ -133,6 +168,7 @@ type HTTPClientArguments struct {
 	DisableKeepAlives    bool              `alloy:"disable_keep_alives,attr,optional"`
 	HTTP2ReadIdleTimeout time.Duration     `alloy:"http2_read_idle_timeout,attr,optional"`
 	HTTP2PingTimeout     time.Duration     `alloy:"http2_ping_timeout,attr,optional"`
+	ForceAttemptHTTP2    bool              `alloy:"force_attempt_http2,attr,optional"`
 
 	// Auth is a binding to an otelcol.auth.* component extension which handles
 	// authentication.
@@ -149,18 +185,18 @@ func (args *HTTPClientArguments) Convert() (*otelconfighttp.ClientConfig, error)
 	}
 
 	// Configure the authentication if args.Auth is set.
-	var authentication *otelconfigauth.Authentication
+	var authentication configoptional.Optional[otelconfigauth.Config]
 	if args.Authentication != nil {
 		ext, err := args.Authentication.GetExtension(auth.Client)
 		if err != nil {
 			return nil, err
 		}
-		authentication = &otelconfigauth.Authentication{AuthenticatorID: ext.ID}
+		authentication = configoptional.Some(otelconfigauth.Config{AuthenticatorID: ext.ID})
 	}
 
-	opaqueHeaders := make(map[string]configopaque.String)
+	opaqueHeaders := configopaque.MapList{}
 	for headerName, headerVal := range args.Headers {
-		opaqueHeaders[headerName] = configopaque.String(headerVal)
+		opaqueHeaders.Set(headerName, configopaque.String(headerVal))
 	}
 
 	v := otelconfighttp.ClientConfig{
@@ -170,7 +206,7 @@ func (args *HTTPClientArguments) Convert() (*otelconfighttp.ClientConfig, error)
 
 		Compression: args.Compression.Convert(),
 
-		TLSSetting: *args.TLS.Convert(),
+		TLS: *args.TLS.Convert(),
 
 		ReadBufferSize:       int(args.ReadBufferSize),
 		WriteBufferSize:      int(args.WriteBufferSize),
@@ -183,6 +219,7 @@ func (args *HTTPClientArguments) Convert() (*otelconfighttp.ClientConfig, error)
 		DisableKeepAlives:    args.DisableKeepAlives,
 		HTTP2ReadIdleTimeout: args.HTTP2ReadIdleTimeout,
 		HTTP2PingTimeout:     args.HTTP2PingTimeout,
+		ForceAttemptHTTP2:    args.ForceAttemptHTTP2,
 
 		Auth: authentication,
 
@@ -213,14 +250,12 @@ type Cookies struct {
 	Enabled bool `alloy:"enabled,attr,optional"`
 }
 
-func (c *Cookies) Convert() *otelconfighttp.CookiesConfig {
+func (c *Cookies) Convert() configoptional.Optional[otelconfighttp.CookiesConfig] {
 	if c == nil {
-		return nil
+		return configoptional.None[otelconfighttp.CookiesConfig]()
 	}
 
-	return &otelconfighttp.CookiesConfig{
-		Enabled: c.Enabled,
-	}
+	return configoptional.Some(otelconfighttp.CookiesConfig{})
 }
 
 type CompressionParams struct {

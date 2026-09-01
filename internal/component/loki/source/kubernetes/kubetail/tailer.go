@@ -6,13 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/blang/semver/v4"
-	"github.com/go-kit/log"
 	"github.com/grafana/dskit/backoff"
-	"github.com/grafana/loki/v3/pkg/logproto"
+	"github.com/grafana/loki/pkg/push"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	corev1 "k8s.io/api/core/v1"
@@ -20,8 +20,8 @@ import (
 	kubetypes "k8s.io/apimachinery/pkg/types"
 
 	"github.com/grafana/alloy/internal/component/common/loki"
+	"github.com/grafana/alloy/internal/component/loki/source/internal/positions"
 	"github.com/grafana/alloy/internal/runner"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 )
 
 // tailerTask is the payload used to create tailers. It implements runner.Task.
@@ -53,7 +53,7 @@ func (tt *tailerTask) Equals(other runner.Task) bool {
 // A tailer tails the logs of a Kubernetes container. It is created by a
 // [Manager].
 type tailer struct {
-	log    log.Logger
+	log    *slog.Logger
 	opts   *Options
 	target *Target
 
@@ -64,21 +64,20 @@ var _ runner.Worker = (*tailer)(nil)
 
 // newTailer returns a new Tailer which tails logs from the target specified by
 // the task.
-func newTailer(l log.Logger, task *tailerTask) *tailer {
+func newTailer(l *slog.Logger, task *tailerTask) *tailer {
 	return &tailer{
-		log:    log.WithPrefix(l, "target", task.Target.String()),
+		log:    l.With("target", task.Target.String()),
 		opts:   task.Options,
 		target: task.Target,
-
-		lset: newLabelSet(task.Target.Labels()),
+		lset:   newLabelSet(task.Target.Labels()),
 	}
 }
 
 func newLabelSet(l labels.Labels) model.LabelSet {
-	res := make(model.LabelSet, len(l))
-	for _, pair := range l {
-		res[model.LabelName(pair.Name)] = model.LabelValue(pair.Value)
-	}
+	res := make(model.LabelSet, l.Len())
+	l.Range(func(l labels.Label) {
+		res[model.LabelName(l.Name)] = model.LabelValue(l.Value)
+	})
 	return res
 }
 
@@ -95,8 +94,8 @@ func (t *tailer) Run(ctx context.Context) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	level.Info(t.log).Log("msg", "tailer running")
-	defer level.Info(t.log).Log("msg", "tailer exited")
+	t.log.Info("tailer running")
+	defer t.log.Info("tailer exited")
 
 	bo := backoff.New(ctx, retailBackoff)
 
@@ -110,18 +109,38 @@ func (t *tailer) Run(ctx context.Context) {
 	for bo.Ongoing() {
 		err := t.tail(ctx, handler)
 		if err == nil {
-			terminated, err := t.containerTerminated(ctx)
-			if terminated {
-				// The container shut down and won't come back; we can stop tailing it.
-				return
-			} else if err != nil {
-				level.Warn(t.log).Log("msg", "could not determine if container terminated; will retry tailing", "err", err)
+			// Check if we should stop tailing this container
+			// Fetch pod info once and use different logic for job pods vs regular pods
+			podInfo, podCheckErr := t.getPodInfo(ctx)
+			if podCheckErr != nil {
+				t.log.Warn("could not get pod info; will retry tailing", "err", podCheckErr)
+			} else {
+				isJob := isJobPod(podInfo)
+				if isJob {
+					// For job pods, use special grace period logic to ensure all logs are captured
+					finished, err := t.shouldStopTailingJobContainer(podInfo)
+					if finished {
+						t.log.Info("should stop tailing job container, stopping tailer")
+						return
+					} else if err != nil {
+						t.log.Warn("could not determine if should stop tailing job container; will retry tailing", "err", err)
+					}
+				} else {
+					// For regular pods, use standard termination logic
+					terminated, err := t.shouldStopTailingContainer(podInfo)
+					if terminated {
+						t.log.Info("container terminated, stopping tailer")
+						return
+					} else if err != nil {
+						t.log.Warn("could not determine if container terminated; will retry tailing", "err", err)
+					}
+				}
 			}
 		}
 
 		if err != nil {
 			t.target.Report(time.Now().UTC(), err)
-			level.Warn(t.log).Log("msg", "tailer stopped; will retry", "err", err)
+			t.log.Warn("tailer stopped; will retry", "err", err)
 		}
 		bo.Wait()
 	}
@@ -144,8 +163,8 @@ func (t *tailer) tail(ctx context.Context, handler loki.EntryHandler) error {
 	var lastReadTime time.Time
 
 	if offset, err := t.opts.Positions.Get(positionsEnt.Path, positionsEnt.Labels); err != nil {
-		level.Warn(t.log).Log("msg", "failed to load last read offset", "err", err)
-	} else {
+		t.log.Warn("failed to load last read offset", "err", err)
+	} else if offset != 0 {
 		lastReadTime = time.UnixMicro(offset)
 	}
 
@@ -156,7 +175,13 @@ func (t *tailer) tail(ctx context.Context, handler loki.EntryHandler) error {
 	}
 
 	var offsetTime *metav1.Time
+
 	if !lastReadTime.IsZero() {
+		offsetTime = &metav1.Time{Time: lastReadTime}
+	} else if t.opts.TailFromEnd {
+		// No position exists AND TailFromEnd is true.
+		// We set the start time to now() to only get new logs.
+		lastReadTime = time.Now()
 		offsetTime = &metav1.Time{Time: lastReadTime}
 	}
 
@@ -221,7 +246,7 @@ func (t *tailer) tail(ctx context.Context, handler loki.EntryHandler) error {
 					}
 					s := time.Since(last)
 					if s > avg*3 {
-						level.Debug(t.log).Log("msg", "have not seen a log line in 3x average time between lines, closing and re-opening tailer", "rolling_average", avg, "time_since_last", s)
+						t.log.Debug("have not seen a log line in 3x average time between lines, closing and re-opening tailer", "rolling_average", avg, "time_since_last", s)
 						return
 					}
 				}
@@ -234,11 +259,16 @@ func (t *tailer) tail(ctx context.Context, handler loki.EntryHandler) error {
 		}()
 	}
 
-	level.Info(t.log).Log("msg", "opened log stream", "start time", lastReadTime)
+	t.log.Info("opened log stream", "start time", lastReadTime)
 
+	return t.processLogStream(ctx, stream, handler, lastReadTime, positionsEnt, calc)
+}
+
+// processLogStream reads log lines from a reader and processes them.
+// It returns when the context is done, the stream ends, or an error occurs.
+func (t *tailer) processLogStream(ctx context.Context, stream io.ReadCloser, handler loki.EntryHandler, lastReadTime time.Time, positionsEnt positions.Entry, calc *rollingAverageCalculator) error {
 	ch := handler.Chan()
 	reader := bufio.NewReader(stream)
-
 	for {
 		line, err := reader.ReadString('\n')
 
@@ -248,18 +278,18 @@ func (t *tailer) tail(ctx context.Context, handler loki.EntryHandler) error {
 			calc.AddTimestamp(time.Now())
 
 			entryTimestamp, entryLine := parseKubernetesLog(line)
-			if !entryTimestamp.After(lastReadTime) {
+			// Skip only if the timestamp is strictly before lastReadTime.
+			// This allows multiple log lines with the same timestamp to be processed,
+			// which is common in Windows containers that log rapidly.
+			if entryTimestamp.Before(lastReadTime) {
 				continue
 			}
 			lastReadTime = entryTimestamp
 
-			entry := loki.Entry{
-				Labels: t.lset.Clone(),
-				Entry: logproto.Entry{
-					Timestamp: entryTimestamp,
-					Line:      entryLine,
-				},
-			}
+			entry := loki.NewEntry(t.lset.Clone(), push.Entry{
+				Timestamp: entryTimestamp,
+				Line:      entryLine,
+			})
 
 			select {
 			case <-ctx.Done():
@@ -286,19 +316,33 @@ func (t *tailer) tail(ctx context.Context, handler loki.EntryHandler) error {
 	}
 }
 
-// containerTerminated determines whether the container this tailer was
-// watching has terminated and won't restart. If containerTerminated returns
+// isJobPod determines if a pod is owned by a Job or CronJob workload.
+// Job pods have different lifecycle semantics than regular pods - they're
+// expected to run to completion and terminate, but we still want to collect
+// their logs even after termination.
+func isJobPod(pod *corev1.Pod) bool {
+	for _, ownerRef := range pod.GetOwnerReferences() {
+		if ownerRef.Controller != nil && *ownerRef.Controller {
+			// Check if owned by Job or CronJob
+			if ownerRef.Kind == "Job" || ownerRef.Kind == "CronJob" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// shouldStopTailingContainer determines whether the container this tailer was
+// watching has terminated and won't restart. If shouldStopTailingContainer returns
 // true, it means that no more logs will appear for the watched target.
-func (t *tailer) containerTerminated(ctx context.Context) (terminated bool, err error) {
+//
+// This function implements standard Kubernetes restart policy logic and should
+// be used for regular pods. Job pods should use shouldStopTailingJobContainer()
+// instead, which has special handling for job lifecycle.
+func (t *tailer) shouldStopTailingContainer(podInfo *corev1.Pod) (terminated bool, err error) {
 	var (
-		key           = t.target.NamespacedName()
 		containerName = t.target.ContainerName()
 	)
-
-	podInfo, err := t.opts.Client.CoreV1().Pods(key.Namespace).Get(ctx, key.Name, metav1.GetOptions{})
-	if err != nil {
-		return false, err
-	}
 
 	// The pod UID is different than the one we were tailing; our UID has
 	// terminated.
@@ -325,7 +369,7 @@ func (t *tailer) containerTerminated(ctx context.Context) (terminated bool, err 
 		// https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#restart-policy
 		switch {
 		case containerInfo.State.Waiting != nil || containerInfo.State.Running != nil:
-			return false, nil // Container will restart
+			return false, nil // Container will restart or is running
 		case containerInfo.State.Terminated != nil && restartPolicy == corev1.RestartPolicyAlways:
 			return false, nil // Container will restart
 		case containerInfo.State.Terminated != nil && containerInfo.State.Terminated.ExitCode != 0 && restartPolicy != corev1.RestartPolicyNever:
@@ -365,6 +409,97 @@ func (t *tailer) containerTerminated(ctx context.Context) (terminated bool, err 
 	}
 
 	return false, nil
+}
+
+// shouldStopTailingJobContainer determines if we should stop tailing a job container.
+// This function implements a more robust strategy for job pods:
+//
+//  1. Never stops while container is running (obvious case)
+//  2. For terminated containers, continues tailing aggressively until we're
+//     certain no more logs exist, rather than using arbitrary time limits
+//  3. Only stops when the Kubernetes API indicates no more logs are available
+//     or the pod has been deleted and we've exhausted all log retrieval attempts
+//
+// This approach handles race conditions where:
+// - Job controller deletes pods quickly after completion
+// - Logs are still buffered in kubelet after container termination
+// - Pod discovery happens after job completion
+func (t *tailer) shouldStopTailingJobContainer(podInfo *corev1.Pod) (finished bool, err error) {
+	var (
+		containerName = t.target.ContainerName()
+	)
+
+	containerInfo, _, found := findContainerStatus(podInfo, containerName)
+	if !found {
+		return false, fmt.Errorf("could not find container %q in pod status", containerName)
+	}
+
+	// If the container is still running, definitely not finished
+	if containerInfo.State.Running != nil {
+		return false, nil
+	}
+
+	// If the container is waiting (e.g., for restart), not finished
+	if containerInfo.State.Waiting != nil {
+		return false, nil
+	}
+
+	// Container has terminated - but for job pods, we need to be more careful
+	// about when to stop tailing
+	if containerInfo.State.Terminated != nil {
+		// Check if the pod is being deleted
+		if podInfo.DeletionTimestamp != nil {
+			// Pod is being deleted - we should try to get remaining logs quickly
+			// but we know the pod won't be around much longer
+			t.log.Debug("job pod is being deleted, will stop tailing soon", "pod", fmt.Sprintf("%s/%s", podInfo.Namespace, podInfo.Name))
+			return true, nil
+		}
+
+		// For completed job containers, we use a more conservative approach:
+		// Instead of a fixed grace period, we continue tailing until we see
+		// clear signs that no more logs will be produced:
+		//
+		// 1. Container terminated successfully (exit code 0) AND
+		// 2. Sufficient time has passed for log flushing AND
+		// 3. No recent log activity (this would be checked by the tailer itself)
+		//
+		// The actual decision to stop should be based on log stream behavior
+		// rather than arbitrary timeouts.
+
+		terminatedAt := containerInfo.State.Terminated.FinishedAt.Time
+		minimumWaitTime := 10 * time.Second // Minimum time to wait for log flushing
+
+		if time.Since(terminatedAt) < minimumWaitTime {
+			// Always wait at least the minimum time to allow for log flushing
+			return false, nil
+		}
+
+		// After minimum wait time, we rely on the tail() method to determine
+		// if the log stream has ended. If tail() returns without error and
+		// no logs were received, that's a stronger signal than arbitrary timeouts.
+		//
+		// For now, we'll be conservative and continue tailing for a reasonable period
+		maxWaitTime := 60 * time.Second // Maximum time to wait for logs
+		if time.Since(terminatedAt) > maxWaitTime {
+			t.log.Debug("job container terminated and max wait time exceeded", "pod", fmt.Sprintf("%s/%s", podInfo.Namespace, podInfo.Name), "container", containerName)
+			return true, nil
+		}
+
+		// Still within the reasonable window - continue tailing
+		return false, nil
+	}
+
+	// Container state is unknown - keep trying
+	return false, nil
+}
+
+// getPodInfo fetches the current pod information from the Kubernetes API.
+func (t *tailer) getPodInfo(ctx context.Context) (*corev1.Pod, error) {
+	var (
+		key = t.target.NamespacedName()
+	)
+
+	return t.opts.Client.CoreV1().Pods(key.Namespace).Get(ctx, key.Name, metav1.GetOptions{})
 }
 
 // parseKubernetesLog parses a log line returned from the Kubernetes API,

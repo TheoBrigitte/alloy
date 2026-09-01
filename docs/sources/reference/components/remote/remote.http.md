@@ -5,6 +5,8 @@ aliases:
 description: Learn about remote.http
 labels:
   stage: general-availability
+  products:
+    - oss
 title: remote.http
 ---
 
@@ -34,7 +36,7 @@ You can use the following arguments with `remote.http`:
 | `url`            | `string`      | URL to poll.                                                 |         | yes      |
 | `body`           | `string`      | The request body.                                            | `""`    | no       |
 | `headers`        | `map(string)` | Custom headers for the request.                              | `{}`    | no       |
-| `is_secret`      | `bool`        | Whether the response body should be treated as a [secret][]. | false   | no       |
+| `is_secret`      | `bool`        | Whether the response body should be treated as a [secret][]. | `false` | no       |
 | `method`         | `string`      | Define HTTP method for the request                           | `"GET"` | no       |
 | `poll_frequency` | `duration`    | Frequency to poll the URL.                                   | `"1m"`  | no       |
 | `poll_timeout`   | `duration`    | Timeout when polling the URL.                                | `"10s"` | no       |
@@ -56,6 +58,8 @@ After a successful poll, the response body from the URL is exported.
 
 You can use the following blocks with `remote.http`:
 
+{{< docs/alloy-config >}}
+
 | Block                                            | Description                                                | Required |
 | ------------------------------------------------ | ---------------------------------------------------------- | -------- |
 | [`client`][client]                               | HTTP client settings when connecting to the endpoint.      | no       |
@@ -65,14 +69,13 @@ You can use the following blocks with `remote.http`:
 | `client` > `oauth2` > [`tls_config`][tls_config] | Configure TLS settings for connecting to the endpoint.     | no       |
 | `client` > [`tls_config`][tls_config]            | Configure TLS settings for connecting to the endpoint.     | no       |
 
-The > symbol indicates deeper levels of nesting.
-For example, `client` > `basic_auth` refers to an `basic_auth` block defined inside a `client` block.
-
 [client]: #client
 [authorization]: #authorization
 [basic_auth]: #basic_auth
 [oauth2]: #oauth2
 [tls_config]: #tls_config
+
+{{< /docs/alloy-config >}}
 
 ### `client`
 

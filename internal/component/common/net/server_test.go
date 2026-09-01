@@ -7,15 +7,17 @@ import (
 	"testing"
 
 	"github.com/gorilla/mux"
-	"github.com/grafana/alloy/internal/util"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/grafana/alloy/internal/util"
 )
 
 func TestTargetServer(t *testing.T) {
 	// dependencies
 	reg := prometheus.NewRegistry()
-	ts, err := NewTargetServer(util.TestLogger(t), "test_namespace", reg, &ServerConfig{})
+	ts, err := NewTargetServer(util.TestAlloyLogger(t).Slog(), "test_namespace", reg, &ServerConfig{})
 	require.NoError(t, err)
 
 	err = ts.MountAndRun(func(router *mux.Router) {
@@ -37,13 +39,13 @@ func TestTargetServer(t *testing.T) {
 	metrics, err := reg.Gather()
 	require.NoError(t, err)
 	for _, m := range metrics {
-		require.True(t, strings.HasPrefix(m.GetName(), "test_namespace"))
+		assert.True(t, strings.HasPrefix(m.GetName(), "test_namespace"), "expected %q to start with %q", m.GetName(), "test_namespace")
 	}
 }
 
 func TestTargetServer_NilConfig(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	ts, err := NewTargetServer(util.TestLogger(t), "test_namespace", reg, nil)
+	ts, err := NewTargetServer(util.TestAlloyLogger(t).Slog(), "test_namespace", reg, nil)
 	require.NoError(t, err)
 
 	err = ts.MountAndRun(func(router *mux.Router) {})

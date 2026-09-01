@@ -12,19 +12,15 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/rehttp"
-	"github.com/go-kit/log"
 	"github.com/grafana/dskit/multierror"
 	"github.com/prometheus-community/stackdriver_exporter/collectors"
 	"github.com/prometheus-community/stackdriver_exporter/delta"
-	"github.com/prometheus-community/stackdriver_exporter/utils"
 	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/monitoring/v3"
 	"google.golang.org/api/option"
 	"gopkg.in/yaml.v2"
 
-	"github.com/grafana/alloy/internal/runtime/logging"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 	"github.com/grafana/alloy/internal/static/integrations"
 	integrations_v2 "github.com/grafana/alloy/internal/static/integrations/v2"
 	"github.com/grafana/alloy/internal/static/integrations/v2/metricsutils"
@@ -55,7 +51,7 @@ var DefaultConfig = Config{
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler for Config
-func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (c *Config) UnmarshalYAML(unmarshal func(any) error) error {
 	*c = DefaultConfig
 
 	type plain Config
@@ -77,7 +73,7 @@ func (c *Config) InstanceKey(_ string) (string, error) {
 	return hex.EncodeToString(hash[:]), nil
 }
 
-func (c *Config) NewIntegration(l log.Logger) (integrations.Integration, error) {
+func (c *Config) NewIntegration(l *slog.Logger) (integrations.Integration, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
@@ -87,14 +83,12 @@ func (c *Config) NewIntegration(l log.Logger) (integrations.Integration, error) 
 		return nil, err
 	}
 
-	logger := slog.New(logging.NewSlogGoKitHandler(l))
-
 	var gcpCollectors []prometheus.Collector
 	var counterStores []*SelfPruningDeltaStore[collectors.ConstMetric]
 	var histogramStores []*SelfPruningDeltaStore[collectors.HistogramMetric]
 	for _, projectID := range c.ProjectIDs {
-		counterStore := NewSelfPruningDeltaStore[collectors.ConstMetric](l, delta.NewInMemoryCounterStore(logger, 30*time.Minute))
-		histogramStore := NewSelfPruningDeltaStore[collectors.HistogramMetric](l, delta.NewInMemoryHistogramStore(logger, 30*time.Minute))
+		counterStore := NewSelfPruningDeltaStore[collectors.ConstMetric](l, delta.NewInMemoryCounterStore(l, 30*time.Minute))
+		histogramStore := NewSelfPruningDeltaStore[collectors.HistogramMetric](l, delta.NewInMemoryHistogramStore(l, 30*time.Minute))
 		monitoringCollector, err := collectors.NewMonitoringCollector(
 			projectID,
 			svc,
@@ -114,7 +108,7 @@ func (c *Config) NewIntegration(l log.Logger) (integrations.Integration, error) 
 				// for more info
 				AggregateDeltas: true,
 			},
-			logger,
+			l,
 			counterStore,
 			histogramStore,
 		)
@@ -132,14 +126,14 @@ func (c *Config) NewIntegration(l log.Logger) (integrations.Integration, error) 
 		for {
 			select {
 			case <-ticker.C:
-				level.Debug(l).Log("msg", "Starting delta store pruning", "number_of_stores", len(counterStores)+len(histogramStores))
+				l.Debug("Starting delta store pruning", "number_of_stores", len(counterStores)+len(histogramStores))
 				for _, store := range counterStores {
 					store.Prune(ctx)
 				}
 				for _, store := range histogramStores {
 					store.Prune(ctx)
 				}
-				level.Debug(l).Log("msg", "Finished delta store pruning", "number_of_stores", len(counterStores)+len(histogramStores))
+				l.Debug("Finished delta store pruning", "number_of_stores", len(counterStores)+len(histogramStores))
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -165,7 +159,7 @@ func (c *Config) Validate() error {
 	if len(c.ExtraFilters) > 0 {
 		filterPrefixToFilter := map[string][]string{}
 		for _, filter := range c.ExtraFilters {
-			splitFilter := strings.Split(filter, ":")
+			splitFilter := strings.SplitN(filter, ":", 2)
 			if len(splitFilter) <= 1 {
 				configErrors.Add(fmt.Errorf("%s is an invalid filter a filter must be of the form <metric_type>:<filter_expression>", filter))
 				continue
@@ -222,11 +216,11 @@ func createMonitoringService(ctx context.Context, httpTimeout time.Duration) (*m
 func parseMetricExtraFilters(filters []string) []collectors.MetricFilter {
 	var extraFilters []collectors.MetricFilter
 	for _, ef := range filters {
-		efPrefix, efModifier := utils.SplitExtraFilter(ef, ":")
-		if efPrefix != "" {
+		splitFilter := strings.SplitN(ef, ":", 2)
+		if len(splitFilter) == 2 && splitFilter[0] != "" {
 			extraFilter := collectors.MetricFilter{
-				TargetedMetricPrefix: efPrefix,
-				FilterQuery:          efModifier,
+				TargetedMetricPrefix: splitFilter[0],
+				FilterQuery:          splitFilter[1],
 			}
 			extraFilters = append(extraFilters, extraFilter)
 		}

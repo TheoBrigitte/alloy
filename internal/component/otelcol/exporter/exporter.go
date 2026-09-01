@@ -5,7 +5,6 @@ package exporter
 import (
 	"context"
 	"errors"
-	"os"
 
 	"github.com/prometheus/client_golang/prometheus"
 	otelcomponent "go.opentelemetry.io/collector/component"
@@ -14,7 +13,6 @@ import (
 	sdkprometheus "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/sdk/metric"
 
-	"github.com/grafana/alloy/internal/build"
 	"github.com/grafana/alloy/internal/component"
 	"github.com/grafana/alloy/internal/component/otelcol"
 	otelcolCfg "github.com/grafana/alloy/internal/component/otelcol/config"
@@ -22,7 +20,8 @@ import (
 	"github.com/grafana/alloy/internal/component/otelcol/internal/lazyconsumer"
 	"github.com/grafana/alloy/internal/component/otelcol/internal/scheduler"
 	"github.com/grafana/alloy/internal/component/otelcol/internal/views"
-	"github.com/grafana/alloy/internal/util/zapadapter"
+	otelcolutil "github.com/grafana/alloy/internal/component/otelcol/util"
+	"github.com/grafana/alloy/internal/slogadapter"
 )
 
 // Arguments is an extension of component.Arguments which contains necessary
@@ -160,7 +159,6 @@ func (e *Exporter) Update(args component.Arguments) error {
 	eargs := args.(Arguments)
 
 	host := scheduler.NewHost(
-		e.opts.Logger,
 		scheduler.WithHostExtensions(eargs.Extensions()),
 		scheduler.WithHostExporters(eargs.Exporters()),
 	)
@@ -184,18 +182,19 @@ func (e *Exporter) Update(args component.Arguments) error {
 	settings := otelexporter.Settings{
 		ID: otelcomponent.NewIDWithName(e.factory.Type(), e.opts.ID),
 		TelemetrySettings: otelcomponent.TelemetrySettings{
-			Logger: zapadapter.New(e.opts.Logger),
-
+			Logger:         slogadapter.NewZap(e.opts.Logger),
 			TracerProvider: e.opts.Tracer,
 			MeterProvider:  mp,
 		},
 
-		BuildInfo: otelcomponent.BuildInfo{
-			Command:     os.Args[0],
-			Description: "Grafana Alloy",
-			Version:     build.Version,
-		},
+		BuildInfo: otelcolutil.GetBuildInfo(),
 	}
+
+	resource, err := otelcolutil.GetTelemetrySettingsResource()
+	if err != nil {
+		return err
+	}
+	settings.TelemetrySettings.Resource = resource
 
 	exporterConfig, err := eargs.Convert()
 	if err != nil {

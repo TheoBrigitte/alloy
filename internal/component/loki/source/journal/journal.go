@@ -4,21 +4,17 @@ package journal
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
-	"github.com/grafana/loki/v3/clients/pkg/promtail/scrapeconfig"
-	"github.com/prometheus/common/model"
-
-	"github.com/grafana/alloy/internal/component/common/loki"
-	"github.com/grafana/alloy/internal/component/common/loki/positions"
-	alloy_relabel "github.com/grafana/alloy/internal/component/common/relabel"
-	"github.com/grafana/alloy/internal/component/loki/source/journal/internal/target"
-	"github.com/grafana/alloy/internal/featuregate"
-
 	"github.com/grafana/alloy/internal/component"
+	"github.com/grafana/alloy/internal/component/common/loki"
+	alloy_relabel "github.com/grafana/alloy/internal/component/common/relabel"
+	"github.com/grafana/alloy/internal/component/loki/source/internal/positions"
+	"github.com/grafana/alloy/internal/featuregate"
 )
 
 func init() {
@@ -37,13 +33,17 @@ var _ component.Component = (*Component)(nil)
 
 // Component represents reading from a journal
 type Component struct {
+	opts           component.Options
+	metrics        *metrics
+	positions      positions.Positions
+	targetsUpdated chan struct{}
+
+	fanout *loki.Fanout
+
 	mut       sync.RWMutex
-	t         *target.JournalTarget
-	metrics   *target.Metrics
-	o         component.Options
-	handler   chan loki.Entry
-	positions positions.Positions
-	receivers []loki.LogsReceiver
+	tailer    *tailer
+	args      Arguments
+	healthErr error
 }
 
 // New creates a new  component.
@@ -53,9 +53,16 @@ func New(o component.Options, args Arguments) (*Component, error) {
 		return nil, err
 	}
 
+	positionFile := filepath.Join(o.DataPath, "positions.yml")
+	if args.LegacyPosition != nil {
+		if err := positions.ConvertLegacyPositionsFileJournal(args.LegacyPosition.File, args.LegacyPosition.Name, positionFile, o.ID, o.Logger); err != nil {
+			return nil, err
+		}
+	}
+
 	positionsFile, err := positions.New(o.Logger, positions.Config{
 		SyncPeriod:        10 * time.Second,
-		PositionsFile:     filepath.Join(o.DataPath, "positions.yml"),
+		PositionsFile:     positionFile,
 		IgnoreInvalidYaml: false,
 		ReadOnly:          false,
 	})
@@ -64,11 +71,12 @@ func New(o component.Options, args Arguments) (*Component, error) {
 	}
 
 	c := &Component{
-		metrics:   target.NewMetrics(o.Registerer),
-		o:         o,
-		handler:   make(chan loki.Entry),
-		positions: positionsFile,
-		receivers: args.Receivers,
+		metrics:        newMetrics(o.Registerer),
+		opts:           o,
+		positions:      positionsFile,
+		fanout:         loki.NewFanout(args.ForwardTo),
+		targetsUpdated: make(chan struct{}, 1),
+		args:           args,
 	}
 	err = c.Update(args)
 	return c, err
@@ -77,27 +85,23 @@ func New(o component.Options, args Arguments) (*Component, error) {
 // Run starts the component.
 func (c *Component) Run(ctx context.Context) error {
 	defer func() {
-		c.mut.RLock()
-		if c.t != nil {
-			c.t.Stop()
+		c.opts.Logger.Info("loki.source.journal component shutting down")
+		c.mut.Lock()
+		defer c.mut.Unlock()
+
+		if c.tailer != nil {
+			c.tailer.Stop()
 		}
-		c.mut.RUnlock()
+		c.positions.Stop()
 
 	}()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case entry := <-c.handler:
-			c.mut.RLock()
-			lokiEntry := loki.Entry{
-				Labels: entry.Labels,
-				Entry:  entry.Entry,
-			}
-			for _, r := range c.receivers {
-				r.Chan() <- lokiEntry
-			}
-			c.mut.RUnlock()
+		case <-c.targetsUpdated:
+			c.reloadTailer()
 		}
 	}
 }
@@ -107,37 +111,71 @@ func (c *Component) Update(args component.Arguments) error {
 	newArgs := args.(Arguments)
 	c.mut.Lock()
 	defer c.mut.Unlock()
-	if c.t != nil {
-		err := c.t.Stop()
-		if err != nil {
-			return err
-		}
-	}
-	rcs := alloy_relabel.ComponentToPromRelabelConfigs(newArgs.RelabelRules)
-	entryHandler := loki.NewEntryHandler(c.handler, func() {})
 
-	newTarget, err := target.NewJournalTarget(c.metrics, c.o.Logger, entryHandler, c.positions, c.o.ID, rcs, convertArgs(c.o.ID, newArgs))
-	if err != nil {
-		return err
+	c.fanout.UpdateChildren(newArgs.ForwardTo)
+
+	c.args = newArgs
+	select {
+	case c.targetsUpdated <- struct{}{}:
+	default: // Update notification already sent
 	}
-	c.t = newTarget
 	return nil
 }
 
-func convertArgs(job string, a Arguments) *scrapeconfig.JournalTargetConfig {
-	labels := model.LabelSet{
-		model.LabelName("job"): model.LabelValue(job),
+// CurrentHealth implements component.HealthComponent. It returns an unhealthy
+// status if the server has terminated.
+func (c *Component) CurrentHealth() component.Health {
+	c.mut.RLock()
+	defer c.mut.RUnlock()
+	if c.healthErr == nil {
+		return component.Health{
+			Health:     component.HealthTypeHealthy,
+			Message:    "journal tailer is running",
+			UpdateTime: time.Now(),
+		}
+	}
+	return component.Health{
+		Health:     component.HealthTypeUnhealthy,
+		Message:    c.healthErr.Error(),
+		UpdateTime: time.Now(),
+	}
+}
+
+func (c *Component) reloadTailer() {
+	c.mut.RLock()
+	var tailerToStop *tailer
+	if c.tailer != nil {
+		tailerToStop = c.tailer
+	}
+	c.mut.RUnlock()
+
+	if tailerToStop != nil {
+		tailerToStop.Stop()
 	}
 
-	for k, v := range a.Labels {
-		labels[model.LabelName(k)] = model.LabelValue(v)
-	}
+	c.mut.Lock()
+	defer c.mut.Unlock()
 
-	return &scrapeconfig.JournalTargetConfig{
-		MaxAge:  a.MaxAge.String(),
-		JSON:    a.FormatAsJson,
-		Labels:  labels,
-		Path:    a.Path,
-		Matches: a.Matches,
+	tailer, err := newTailer(tailerOptions{
+		logger:  c.opts.Logger,
+		metrics: c.metrics,
+		fanout:  c.fanout,
+		path:    c.args.Path,
+		id:      c.opts.ID,
+		pos:     c.positions,
+		matches: c.args.Matches,
+		maxAge:  c.args.MaxAge,
+		rcs:     alloy_relabel.ComponentToPromRelabelConfigs(c.args.RelabelRules),
+		labels:  c.args.Labels,
+		asJSON:  c.args.FormatAsJson,
+	})
+
+	if err != nil {
+		c.opts.Logger.Error("error creating journal tailer", "err", err, "path", c.args.Path)
+		c.healthErr = fmt.Errorf("error creating journal tailer: %w", err)
+	} else {
+		c.tailer = tailer
+		c.tailer.Start()
+		c.healthErr = nil
 	}
 }

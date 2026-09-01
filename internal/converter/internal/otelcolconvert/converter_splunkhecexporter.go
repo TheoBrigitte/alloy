@@ -4,16 +4,15 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/grafana/alloy/internal/component/otelcol/exporter/splunkhec"
 	splunkhec_config "github.com/grafana/alloy/internal/component/otelcol/exporter/splunkhec/config"
 	"github.com/grafana/alloy/internal/component/otelcol/extension"
 	"github.com/grafana/alloy/internal/converter/diag"
 	"github.com/grafana/alloy/internal/converter/internal/common"
 	"github.com/grafana/alloy/syntax/alloytypes"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/splunkhecexporter"
+	translator "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/splunk"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componentstatus"
-	"go.opentelemetry.io/collector/exporter/exporterbatcher"
 )
 
 func init() {
@@ -32,10 +31,11 @@ func (splunkhecExporterConverter) ConvertAndAppend(state *State, id componentsta
 	var diags diag.Diagnostics
 
 	label := state.AlloyComponentLabel()
-	overrideHook := func(val interface{}) interface{} {
+	overrideHook := func(val any) any {
 		switch val.(type) {
 		case extension.ExtensionHandler:
-			ext := state.LookupExtension(*cfg.(*splunkhecexporter.Config).QueueSettings.StorageID)
+			queue := cfg.(*splunkhecexporter.Config).QueueSettings.GetOrInsertDefault()
+			ext := state.LookupExtension(*queue.StorageID)
 			return common.CustomTokenizer{Expr: fmt.Sprintf("%s.%s.handler", strings.Join(ext.Name, "."), ext.Label)}
 		}
 		return common.GetAlloyTypesOverrideHook()(val)
@@ -53,28 +53,37 @@ func (splunkhecExporterConverter) ConvertAndAppend(state *State, id componentsta
 	return diags
 }
 
-func toSplunkHecExporter(cfg *splunkhecexporter.Config) *splunkhec.Arguments {
-	return &splunkhec.Arguments{
-		Client:       toSplunkHecHTTPClientArguments(cfg),
-		Retry:        toRetryArguments(cfg.BackOffConfig),
-		Queue:        toQueueArguments(cfg.QueueSettings),
-		Splunk:       toSplunkConfig(cfg),
-		DebugMetrics: common.DefaultValue[splunkhec.Arguments]().DebugMetrics,
+func toSplunkHecExporter(cfg *splunkhecexporter.Config) *splunkhec_config.SplunkHecArguments {
+	v := &splunkhec_config.SplunkHecArguments{
+		SplunkHecClientArguments: toSplunkHecHTTPClientArguments(cfg),
+		RetrySettings:            toRetryArguments(cfg.BackOffConfig),
+		QueueSettings:            toQueueArguments(cfg.QueueSettings),
+		Splunk:                   toSplunkConfig(cfg),
+		DebugMetrics:             common.DefaultValue[splunkhec_config.SplunkHecArguments]().DebugMetrics,
 	}
+
+	// As the OTelAttrsToHec type is internal we can't build a function to convert it
+	v.OtelAttrsToHec.Host = cfg.OtelAttrsToHec.Host
+	v.OtelAttrsToHec.Source = cfg.OtelAttrsToHec.Source
+	v.OtelAttrsToHec.SourceType = cfg.OtelAttrsToHec.SourceType
+	v.OtelAttrsToHec.Index = cfg.OtelAttrsToHec.Index
+
+	return v
 }
 
 func toSplunkHecHTTPClientArguments(cfg *splunkhecexporter.Config) splunkhec_config.SplunkHecClientArguments {
 	return splunkhec_config.SplunkHecClientArguments{
-		Endpoint:            cfg.Endpoint,
-		Timeout:             cfg.Timeout,
-		ReadBufferSize:      cfg.ReadBufferSize,
-		WriteBufferSize:     cfg.WriteBufferSize,
-		MaxIdleConns:        cfg.MaxIdleConns,
-		MaxIdleConnsPerHost: cfg.MaxIdleConnsPerHost,
-		MaxConnsPerHost:     cfg.MaxConnsPerHost,
-		IdleConnTimeout:     cfg.IdleConnTimeout,
-		DisableKeepAlives:   cfg.DisableKeepAlives,
-		InsecureSkipVerify:  cfg.TLSSetting.Insecure,
+		Endpoint:            cfg.ClientConfig.Endpoint,
+		Timeout:             cfg.ClientConfig.Timeout,
+		ReadBufferSize:      cfg.ClientConfig.ReadBufferSize,
+		WriteBufferSize:     cfg.ClientConfig.WriteBufferSize,
+		MaxIdleConns:        cfg.ClientConfig.MaxIdleConns,
+		MaxIdleConnsPerHost: cfg.ClientConfig.MaxIdleConnsPerHost,
+		MaxConnsPerHost:     cfg.ClientConfig.MaxConnsPerHost,
+		IdleConnTimeout:     cfg.ClientConfig.IdleConnTimeout,
+		DisableKeepAlives:   cfg.ClientConfig.DisableKeepAlives,
+		InsecureSkipVerify:  cfg.ClientConfig.TLS.Insecure,
+		ForceAttemptHTTP2:   cfg.ClientConfig.ForceAttemptHTTP2,
 	}
 }
 
@@ -99,7 +108,6 @@ func toSplunkConfig(cfg *splunkhecexporter.Config) splunkhec_config.SplunkConf {
 		UseMultiMetricFormat:    cfg.UseMultiMetricFormat,
 		Heartbeat:               toSplunkHecHeartbeat(cfg.Heartbeat),
 		Telemetry:               toSplunkHecTelemetry(cfg.Telemetry),
-		BatcherConfig:           toSplunkHecBatcherConfig(cfg.BatcherConfig),
 		HecFields:               toSplunkHecFields(cfg.HecFields),
 	}
 }
@@ -119,18 +127,7 @@ func toSplunkHecTelemetry(cfg splunkhecexporter.HecTelemetry) splunkhec_config.S
 	}
 }
 
-func toSplunkHecBatcherConfig(cfg exporterbatcher.Config) splunkhec_config.BatcherConfig {
-	sizer, _ := cfg.SizeConfig.Sizer.MarshalText()
-	return splunkhec_config.BatcherConfig{
-		Enabled:      cfg.Enabled,
-		FlushTimeout: cfg.FlushTimeout,
-		MinSize:      cfg.SizeConfig.MinSize,
-		MaxSize:      cfg.SizeConfig.MaxSize,
-		Sizer:        string(sizer),
-	}
-}
-
-func toSplunkHecFields(cfg splunkhecexporter.OtelToHecFields) splunkhec_config.HecFields {
+func toSplunkHecFields(cfg translator.OtelToHecFields) splunkhec_config.HecFields {
 	return splunkhec_config.HecFields{
 		SeverityText:   cfg.SeverityText,
 		SeverityNumber: cfg.SeverityNumber,

@@ -5,7 +5,7 @@ aliases:
 description: Learn how to install Grafana Alloy as a standalone binary
 menuTitle: Standalone
 title: Install Grafana Alloy as a standalone binary
-weight: 600
+weight: 500
 ---
 
 # Install {{% param "FULL_PRODUCT_NAME" %}} as a standalone binary
@@ -52,5 +52,5 @@ To retrieve them, follow the steps above but search for the `alloy-boringcrypto`
 
 * [Run {{< param "PRODUCT_NAME" >}}][Run]
 
-[release]: https://github.com/grafana/alloy/releases
+[release]: https://github.com/grafana/alloy/releases/latest
 [Run]: ../../run/binary/

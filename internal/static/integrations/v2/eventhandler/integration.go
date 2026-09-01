@@ -2,10 +2,11 @@ package eventhandler
 
 import (
 	"context"
+	"log/slog"
 
-	"github.com/go-kit/log"
-	"github.com/grafana/alloy/internal/static/integrations/v2"
 	"github.com/prometheus/prometheus/model/labels"
+
+	"github.com/grafana/alloy/internal/static/integrations/v2"
 )
 
 // DefaultConfig sets defaults for Config
@@ -48,7 +49,7 @@ type Config struct {
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler for Config
-func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (c *Config) UnmarshalYAML(unmarshal func(any) error) error {
 	*c = DefaultConfig
 
 	type plain Config
@@ -72,7 +73,7 @@ func (c *Config) Identifier(globals integrations.Globals) (string, error) {
 }
 
 // NewIntegration converts this config into an instance of an integration.
-func (c *Config) NewIntegration(l log.Logger, globals integrations.Globals) (integrations.Integration, error) {
+func (c *Config) NewIntegration(_ *slog.Logger, globals integrations.Globals) (integrations.Integration, error) {
 	// NOTE(rfratto): the eventhandler integration is never run, and all the
 	// logic has been moved to the loki.source.kubernetes_events component.
 	//

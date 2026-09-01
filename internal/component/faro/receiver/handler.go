@@ -1,29 +1,35 @@
 package receiver
 
 import (
+	"compress/gzip"
 	"crypto/subtle"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
-	"github.com/go-kit/log"
-	"github.com/grafana/alloy/internal/component/faro/receiver/internal/payload"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
-	"github.com/grafana/alloy/internal/util"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/cors"
 	"go.opentelemetry.io/collector/client"
 	"golang.org/x/time/rate"
+
+	"github.com/grafana/alloy/internal/component/faro/receiver/internal/payload"
+	"github.com/grafana/alloy/internal/util"
 )
 
 const apiKeyHeader = "x-api-key"
 
+var defaultAllowedHeaders = []string{"content-type", "content-encoding", "traceparent", apiKeyHeader, "x-faro-session-id", "x-scope-orgid"}
+
 type handler struct {
-	log         log.Logger
-	rateLimiter *rate.Limiter
-	exporters   []exporter
-	errorsTotal *prometheus.CounterVec
+	log            *slog.Logger
+	reg            prometheus.Registerer
+	rateLimiter    *rate.Limiter
+	appRateLimiter *AppRateLimitingConfig
+	exporters      []exporter
+	errorsTotal    *prometheus.CounterVec
 
 	argsMut sync.RWMutex
 	args    ServerArguments
@@ -32,7 +38,7 @@ type handler struct {
 
 var _ http.Handler = (*handler)(nil)
 
-func newHandler(l log.Logger, reg prometheus.Registerer, exporters []exporter) *handler {
+func newHandler(l *slog.Logger, reg prometheus.Registerer, exporters []exporter) *handler {
 	errorsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "faro_receiver_exporter_errors_total",
 		Help: "Total number of errors produced by a receiver exporter",
@@ -41,6 +47,7 @@ func newHandler(l log.Logger, reg prometheus.Registerer, exporters []exporter) *
 
 	return &handler{
 		log:         l,
+		reg:         reg,
 		rateLimiter: rate.NewLimiter(rate.Inf, 0),
 		exporters:   exporters,
 		errorsTotal: errorsTotal,
@@ -60,18 +67,27 @@ func (h *handler) Update(args ServerArguments) {
 		// burst to be filled.
 		t := time.Now().Add(-time.Duration(float64(time.Second) * args.RateLimiting.Rate * args.RateLimiting.BurstSize))
 
+		// Always set the global rate limiter for fallback protection
 		h.rateLimiter.SetLimitAt(t, rate.Limit(args.RateLimiting.Rate))
 		h.rateLimiter.SetBurstAt(t, int(args.RateLimiting.BurstSize))
+
+		// Initialize or update the per-app rate limiter if strategy is per_app
+		if args.RateLimiting.Strategy != RateLimitingStrategyPerApp {
+			h.appRateLimiter = nil
+		} else if h.appRateLimiter == nil {
+			h.appRateLimiter = NewAppRateLimitingConfig(args.RateLimiting.Rate, int(args.RateLimiting.BurstSize), h.reg)
+		}
 	} else {
 		// Set to infinite rate limit.
 		h.rateLimiter.SetLimit(rate.Inf)
 		h.rateLimiter.SetBurst(0) // 0 burst is ignored when using rate.Inf.
+		h.appRateLimiter = nil
 	}
 
 	if len(args.CORSAllowedOrigins) > 0 {
 		h.cors = cors.New(cors.Options{
 			AllowedOrigins: args.CORSAllowedOrigins,
-			AllowedHeaders: []string{apiKeyHeader, "content-type", "x-faro-session-id"},
+			AllowedHeaders: defaultAllowedHeaders,
 		})
 	} else {
 		h.cors = nil // Disable cors.
@@ -97,11 +113,66 @@ func (h *handler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 }
 
 func (h *handler) handleRequest(rw http.ResponseWriter, req *http.Request) {
-	if !h.rateLimiter.Allow() {
+	// Check global rate limiting (if enabled)
+	if !h.checkGlobalRateLimit() {
 		http.Error(rw, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
 		return
 	}
 
+	var bodyReader io.Reader = req.Body
+	if req.Header.Get("Content-Encoding") == "gzip" {
+		gzipReader, err := gzip.NewReader(req.Body)
+		if err != nil {
+			http.Error(rw, "failed to decompress gzip body", http.StatusBadRequest)
+			return
+		}
+		defer gzipReader.Close()
+		bodyReader = gzipReader
+	}
+
+	var p payload.Payload
+	if err := json.NewDecoder(bodyReader).Decode(&p); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Check per-app rate limiting (if enabled)
+	if !h.checkPerAppRateLimit(p) {
+		http.Error(rw, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
+		return
+	}
+
+	h.processRequest(rw, req, p)
+}
+
+// checkGlobalRateLimit checks if the global rate limit allows a request.
+// Global rate limiting is applied by default if RateLimiting.Enabled is true.
+func (h *handler) checkGlobalRateLimit() bool {
+	if h.args.RateLimiting.Enabled && h.args.RateLimiting.Strategy == RateLimitingStrategyGlobal {
+		return h.rateLimiter.Allow()
+	}
+
+	// meaning that the global rate limit is not set
+	return true
+}
+
+// checkPerAppRateLimit checks if the per-app rate limit allows a request.
+func (h *handler) checkPerAppRateLimit(p payload.Payload) bool {
+	if h.args.RateLimiting.Enabled && h.args.RateLimiting.Strategy == RateLimitingStrategyPerApp {
+		app, env := h.extractAppEnv(p)
+		allowed := h.appRateLimiter.Allow(app, env)
+		if !allowed {
+			h.log.Debug("per-app rate limit exceeded", "app", app, "env", env)
+		}
+
+		return allowed
+	}
+
+	// meaning that the per-app rate limit is not set
+	return true
+}
+
+func (h *handler) processRequest(rw http.ResponseWriter, req *http.Request, p payload.Payload) {
 	// If an API key is configured, ensure the request has a matching key.
 	if len(h.args.APIKey) > 0 {
 		apiHeader := req.Header.Get(apiKeyHeader)
@@ -118,26 +189,33 @@ func (h *handler) handleRequest(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	var p payload.Payload
-	if err := json.NewDecoder(req.Body).Decode(&p); err != nil {
-		http.Error(rw, err.Error(), http.StatusBadRequest)
-		return
-	}
-
 	var wg sync.WaitGroup
 	for _, exp := range h.exporters {
-		wg.Add(1)
-		go func(exp exporter) {
-			defer wg.Done()
-
+		wg.Go(func() {
 			if err := exp.Export(req.Context(), p); err != nil {
-				level.Error(h.log).Log("msg", "exporter failed with error", "exporter", exp.Name(), "err", err)
+				h.log.Error("exporter failed with error", "exporter", exp.Name(), "err", err)
 				h.errorsTotal.WithLabelValues(exp.Name()).Inc()
 			}
-		}(exp)
+		})
 	}
 	wg.Wait()
 
 	rw.WriteHeader(http.StatusAccepted)
 	_, _ = rw.Write([]byte("ok"))
+}
+
+// extractAppEnv extracts the app and environment from the Faro payload metadata.
+// Returns empty strings for missing values to ensure isolation without collision with valid app names.
+func (h *handler) extractAppEnv(p payload.Payload) (string, string) {
+	app, env := "", ""
+
+	if p.Meta.App.Name != "" {
+		app = p.Meta.App.Name
+	}
+
+	if p.Meta.App.Environment != "" {
+		env = p.Meta.App.Environment
+	}
+
+	return app, env
 }

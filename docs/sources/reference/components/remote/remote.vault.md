@@ -5,6 +5,8 @@ aliases:
 description: Learn about remote.vault
 labels:
   stage: general-availability
+  products:
+    - oss
 title: remote.vault
 ---
 
@@ -39,9 +41,9 @@ You can use the following arguments with `remote.vault`:
 
 | Name               | Type       | Description                                                | Default | Required |
 | ------------------ | ---------- | ---------------------------------------------------------- | ------- | -------- |
+| `path`             | `string`   | The path to retrieve a secret from.                        |         | yes      |
 | `server`           | `string`   | The Vault server to connect to.                            |         | yes      |
 | `namespace`        | `string`   | The Vault namespace to connect to (Vault Enterprise only). |         | no       |
-| `path`             | `string`   | The path to retrieve a secret from.                        |         | yes      |
 | `key`              | `string`   | The key to retrieve a secret from.                         |         | no       |
 | `reread_frequency` | `duration` | Rate to re-read keys.                                      | `"0s"`  | no       |
 
@@ -54,6 +56,8 @@ Setting `reread_frequency` to `"0s"` (the default) disables this behavior.
 ## Blocks
 
 You can use the following blocks with `remote.vault`:
+
+{{< docs/alloy-config >}}
 
 | Block                                | Description                                          | Required |
 | ------------------------------------ | ---------------------------------------------------- | -------- |
@@ -68,8 +72,6 @@ You can use the following blocks with `remote.vault`:
 | [`auth.userpass`][auth.userpass]     | Authenticate to Vault using a username and password. | no       |
 | [`client_options`][client_options]   | Options for the Vault client.                        | no       |
 
-Exactly one `auth.*` block **must** be provided, otherwise the component will fail to load.
-
 [auth.approle]: #authapprole
 [auth.aws]: #authaws
 [auth.azure]: #authazure
@@ -81,16 +83,20 @@ Exactly one `auth.*` block **must** be provided, otherwise the component will fa
 [auth.userpass]: #authuserpass
 [client_options]: #client_options
 
+{{< /docs/alloy-config >}}
+
+Exactly one `auth.*` block **must** be provided, otherwise the component will fail to load.
+
 ### `auth.approle`
 
-The `auth.token` block authenticates to Vault using the [AppRole auth method][AppRole].
+The `auth.approle` block authenticates to Vault using the [AppRole auth method][AppRole].
 
 | Name             | Type     | Description                      | Default     | Required |
 | ---------------- | -------- | -------------------------------- | ----------- | -------- |
 | `role_id`        | `string` | Role ID to authenticate as.      |             | yes      |
 | `secret`         | `secret` | Secret to authenticate with.     |             | yes      |
-| `wrapping_token` | `bool`   | Whether to [unwrap][] the token. | `false`     | no       |
 | `mount_path`     | `string` | Mount path for the login.        | `"approle"` | no       |
+| `wrapping_token` | `bool`   | Whether to [unwrap][] the token. | `false`     | no       |
 
 [AppRole]: https://www.vaultproject.io/docs/auth/approle
 [unwrap]: https://www.vaultproject.io/docs/concepts/response-wrapping
@@ -105,11 +111,11 @@ The environment variable `AWS_SHARED_CREDENTIALS_FILE` may be specified to use a
 | Name                   | Type     | Description                                       | Default       | Required |
 | ---------------------- | -------- | ------------------------------------------------- | ------------- | -------- |
 | `type`                 | `string` | Mechanism to authenticate against AWS with.       |               | yes      |
+| `ec2_signature_type`   | `string` | Signature to use when authenticating against EC2. | `"pkcs7"`     | no       |
+| `iam_server_id_header` | `string` | Configures a `X-Vault-AWS-IAM-Server-ID` header.  | `""`          | no       |
+| `mount_path`           | `string` | Mount path for the login.                         | `"aws"`       | no       |
 | `region`               | `string` | AWS region to connect to.                         | `"us-east-1"` | no       |
 | `role`                 | `string` | Overrides the inferred role name inferred.        | `""`          | no       |
-| `iam_server_id_header` | `string` | Configures a `X-Vault-AWS-IAM-Server-ID` header.  | `""`          | no       |
-| `ec2_signature_type`   | `string` | Signature to use when authenticating against EC2. | `"pkcs7"`     | no       |
-| `mount_path`           | `string` | Mount path for the login.                         | `"aws"`       | no       |
 
 The `type` argument must be set to one of `"ec2"` or `"iam"`.
 
@@ -301,7 +307,7 @@ local.file "vault_token" {
 remote.vault "remote_write" {
   server = "https://prod-vault.corporate.internal"
   path   = "secret"
-  key    = "prometheus/remote_write
+  key    = "prometheus/remote_write"
 
   auth.token {
     token = local.file.vault_token.content

@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/grafana/alloy/internal/featuregate"
-	util_log "github.com/grafana/loki/v3/pkg/util/log"
+	"github.com/grafana/alloy/internal/runtime/logging"
 )
 
 var testSamplingAlloy = `
@@ -21,7 +21,7 @@ stage.sampling {
 
 func TestSamplingPipeline(t *testing.T) {
 	registry := prometheus.NewRegistry()
-	pl, err := NewPipeline(util_log.Logger, loadConfig(testSamplingAlloy), &plName, registry, featuregate.StabilityGenerallyAvailable)
+	pl, err := NewPipeline(logging.NewSlogNop(), loadConfig(testSamplingAlloy), registry, featuregate.StabilityGenerallyAvailable)
 	require.NoError(t, err)
 
 	entries := make([]Entry, 0)

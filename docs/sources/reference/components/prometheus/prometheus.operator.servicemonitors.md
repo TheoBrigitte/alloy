@@ -5,12 +5,14 @@ aliases:
 description: Learn about prometheus.operator.servicemonitors
 labels:
   stage: general-availability
+  products:
+    - oss
 title: prometheus.operator.servicemonitors
 ---
 
 # `prometheus.operator.servicemonitors`
 
-`prometheus.operator.servicemonitors` discovers [ServiceMonitor](https://prometheus-operator.dev/docs/operator/api/#monitoring.coreos.com/v1.ServiceMonitor) resources in your Kubernetes cluster and scrapes the targets they reference.
+`prometheus.operator.servicemonitors` discovers [ServiceMonitor](https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1.ServiceMonitor) resources in your Kubernetes cluster and scrapes the targets they reference.
 This component performs three main functions:
 
 1. Discover ServiceMonitor resources from your Kubernetes cluster.
@@ -35,16 +37,33 @@ prometheus.operator.servicemonitors "<LABEL>" {
 
 You can use the following arguments with `prometheus.operator.servicemonitors`:
 
-| Name                    | Type                    | Description                                                                                               | Default     | Required |
-| ----------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------- | ----------- | -------- |
-| `forward_to`            | `list(MetricsReceiver)` | List of receivers to send scraped metrics to.                                                             |             | yes      |
-| `informer_sync_timeout` | `duration`              | Timeout for initial sync of ServiceMonitor resources.                                                     | `1m`        | no       |
-| `kubernetes_role`       | `string`                | The Kubernetes role used for discovery. Supports `endpoints` or `endpointslice`.                          | `endpoints` | no       |
-| `namespaces`            | `list(string)`          | List of namespaces to search for ServiceMonitor resources. If not specified, all namespaces are searched. |             | no       |
+| Name                               | Type                    | Description                                                                                               | Default       | Required |
+| ---------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------- | ------------- | -------- |
+| `forward_to`                       | `list(MetricsReceiver)` | List of receivers to send scraped metrics to.                                                             |               | yes      |
+| `allow_arbitrary_file_access`      | `bool`                  | Allow ServiceMonitor endpoints that reference arbitrary files on the {{< param "PRODUCT_NAME" >}} filesystem. | `false`       | no       |
+| `informer_sync_timeout`            | `duration`              | Timeout for initial sync of ServiceMonitor resources.                                                     | `"1m"`        | no       |
+| `kubernetes_role`                  | `string`                | The Kubernetes role used for discovery. Supports `endpoints` or `endpointslice`.                          | `"endpoints"` | no       |
+| `namespaces`                       | `list(string)`          | List of namespaces to search for ServiceMonitor resources. If not specified, all namespaces are searched. |               | no       |
+
+By default, `allow_arbitrary_file_access` prevents ServiceMonitor endpoints from referencing files on the {{< param "PRODUCT_NAME" >}} filesystem through `bearerTokenFile`, `tlsConfig.caFile`, `tlsConfig.certFile`, or `tlsConfig.keyFile`.
+This is important in multi-tenant Kubernetes clusters where ServiceMonitor resources may be created by users who don't have the same permissions as {{< param "PRODUCT_NAME" >}}.
+
+When `allow_arbitrary_file_access` is `false`, {{< param "PRODUCT_NAME" >}} rejects the generated scrape configuration for a ServiceMonitor that references local files and records the reason in the component debug information.
+Other ServiceMonitor resources and components continue to run.
+{{< param "PRODUCT_NAME" >}} also writes a warning log that includes the ServiceMonitor namespace, name, endpoint index, and field.
+
+{{< admonition type="caution" >}}
+Set `allow_arbitrary_file_access` to `true` only for trusted ServiceMonitor resources that need local file references.
+When set to `true`, {{< param "PRODUCT_NAME" >}} allows the file references but still writes warning logs when it reconciles a changed ServiceMonitor that references local files.
+{{< /admonition >}}
+
+Use `bearerTokenSecret`, `authorization`, or TLS secret and `ConfigMap` references in the ServiceMonitor instead of local file references.
 
 ## Blocks
 
 You can use the following blocks with `prometheus.operator.servicemonitors`:
+
+{{< docs/alloy-config >}}
 
 | Name                                                | Description                                                                                 | Required |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------- | -------- |
@@ -60,9 +79,6 @@ You can use the following blocks with `prometheus.operator.servicemonitors`:
 | [`selector`][selector]                              | Label selector for which ServiceMonitors to discover.                                       | no       |
 | `selector` > [`match_expression`][match_expression] | Label selector expression for which ServiceMonitors to discover.                            | no       |
 
-The > symbol indicates deeper levels of nesting.
-For example, `client` > `basic_auth` refers to a `basic_auth` block defined inside a `client` block.
-
 [client]: #client
 [basic_auth]: #basic_auth
 [authorization]: #authorization
@@ -73,6 +89,8 @@ For example, `client` > `basic_auth` refers to a `basic_auth` block defined insi
 [rule]: #rule
 [scrape]: #scrape
 [clustering]: #clustering
+
+{{< /docs/alloy-config >}}
 
 ### `client`
 
@@ -88,7 +106,7 @@ The following arguments are supported:
 | `bearer_token`           | `secret`            | Bearer token to authenticate with.                                                               |         | no       |
 | `enable_http2`           | `bool`              | Whether HTTP2 is supported for requests.                                                         | `true`  | no       |
 | `follow_redirects`       | `bool`              | Whether redirects returned by the server should be followed.                                     | `true`  | no       |
-| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |                      | no       |
+| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |         | no       |
 | `kubeconfig_file`        | `string`            | Path of the `kubeconfig` file to use for connecting to Kubernetes.                               |         | no       |
 | `no_proxy`               | `string`            | Comma-separated list of IP addresses, CIDR notations, and domain names to exclude from proxying. |         | no       |
 | `proxy_connect_header`   | `map(list(secret))` | Specifies headers to send to proxies during CONNECT requests.                                    |         | no       |
@@ -97,11 +115,11 @@ The following arguments are supported:
 
  At most, one of the following can be provided:
 
-* [`authorization`][authorization] block
-* [`basic_auth`][basic_auth] block
-* [`bearer_token_file`][client] argument
-* [`bearer_token`][client] argument
-* [`oauth2`][oauth2] block
+* [`authorization`](#authorization) block
+* [`basic_auth`](#basic_auth) block
+* [`bearer_token_file`](#client) argument
+* [`bearer_token`](#client) argument
+* [`oauth2`](#oauth2) block
 
 {{< docs/shared lookup="reference/components/http-client-proxy-config-description.md" source="alloy" version="<ALLOY_VERSION>" >}}
 

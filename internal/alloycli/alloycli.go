@@ -4,16 +4,16 @@ package alloycli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+
+	"github.com/spf13/cobra"
 
 	"github.com/grafana/alloy/internal/build"
-	"github.com/spf13/cobra"
 )
 
-// Run runs the Alloy CLI. It is expected to be called directly from the main
-// function.
-func Run() {
+func Command() *cobra.Command {
 	var cmd = &cobra.Command{
-		Use:     fmt.Sprintf("%s [global options] <subcommand>", os.Args[0]),
+		Use:     fmt.Sprintf("%s [global options] <subcommand>", filepath.Base(os.Args[0])),
 		Short:   "Grafana Alloy",
 		Version: build.Print("alloy"),
 
@@ -26,12 +26,11 @@ func Run() {
 	cmd.AddCommand(
 		convertCommand(),
 		fmtCommand(),
-		runCommand(),
+		gqlCommand(),
+		RunCommand(),
 		toolsCommand(),
 		validateCommand(),
 	)
 
-	if err := cmd.Execute(); err != nil {
-		os.Exit(1)
-	}
+	return cmd
 }

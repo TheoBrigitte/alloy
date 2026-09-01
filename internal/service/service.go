@@ -9,6 +9,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	"github.com/grafana/alloy/internal/component"
 	"github.com/grafana/alloy/internal/featuregate"
@@ -47,6 +48,11 @@ type Definition struct {
 	Stability featuregate.Stability
 }
 
+// CloneConfig returns a new zero value of the registered config type.
+func (d Definition) CloneConfig() any {
+	return reflect.New(reflect.TypeOf(d.ConfigType)).Interface()
+}
+
 // Host is a controller for services and components.
 type Host interface {
 	// GetComponent gets a running component by ID.
@@ -70,7 +76,7 @@ type Host interface {
 
 	// NewController returns an unstarted, isolated Controller that a Service
 	// can use to instantiate its own components.
-	NewController(id string) Controller
+	NewController(id string) (Controller, error)
 }
 
 // Controller is implemented by alloy.Alloy.

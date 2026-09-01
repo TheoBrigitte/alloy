@@ -7,21 +7,21 @@ package extension
 
 import (
 	"context"
-	"os"
 
-	"github.com/grafana/alloy/internal/build"
-	"github.com/grafana/alloy/internal/component"
-	otelcolCfg "github.com/grafana/alloy/internal/component/otelcol/config"
-	"github.com/grafana/alloy/internal/component/otelcol/internal/lazycollector"
-	"github.com/grafana/alloy/internal/component/otelcol/internal/scheduler"
-	"github.com/grafana/alloy/internal/util/zapadapter"
-	"github.com/grafana/alloy/syntax"
 	"github.com/prometheus/client_golang/prometheus"
 	otelcomponent "go.opentelemetry.io/collector/component"
 	otelextension "go.opentelemetry.io/collector/extension"
 	"go.opentelemetry.io/collector/pipeline"
 	sdkprometheus "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/sdk/metric"
+
+	"github.com/grafana/alloy/internal/component"
+	otelcolCfg "github.com/grafana/alloy/internal/component/otelcol/config"
+	"github.com/grafana/alloy/internal/component/otelcol/internal/lazycollector"
+	"github.com/grafana/alloy/internal/component/otelcol/internal/scheduler"
+	otelcolutil "github.com/grafana/alloy/internal/component/otelcol/util"
+	"github.com/grafana/alloy/internal/slogadapter"
+	"github.com/grafana/alloy/syntax"
 )
 
 // Arguments is an extension of component.Arguments which contains necessary
@@ -114,7 +114,7 @@ func New(opts component.Options, f otelextension.Factory, args Arguments) (*Exte
 
 // Run starts the Extension component.
 func (e *Extension) Run(ctx context.Context) error {
-	e.opts.Logger.Log("level", "info", "msg", "starting extension", "component", e.opts.ID)
+	e.opts.Logger.Info("starting extension", "component", e.opts.ID)
 	defer e.cancel()
 	return e.sched.Run(ctx)
 }
@@ -126,7 +126,6 @@ func (e *Extension) Update(args component.Arguments) error {
 	rargs := args.(Arguments)
 
 	host := scheduler.NewHost(
-		e.opts.Logger,
 		scheduler.WithHostExtensions(rargs.Extensions()),
 		scheduler.WithHostExporters(rargs.Exporters()),
 	)
@@ -143,18 +142,19 @@ func (e *Extension) Update(args component.Arguments) error {
 	settings := otelextension.Settings{
 		ID: otelcomponent.NewIDWithName(e.factory.Type(), e.opts.ID),
 		TelemetrySettings: otelcomponent.TelemetrySettings{
-			Logger: zapadapter.New(e.opts.Logger),
-
+			Logger:         slogadapter.NewZap(e.opts.Logger),
 			TracerProvider: e.opts.Tracer,
 			MeterProvider:  mp,
 		},
 
-		BuildInfo: otelcomponent.BuildInfo{
-			Command:     os.Args[0],
-			Description: "Grafana Alloy",
-			Version:     build.Version,
-		},
+		BuildInfo: otelcolutil.GetBuildInfo(),
 	}
+
+	resource, err := otelcolutil.GetTelemetrySettingsResource()
+	if err != nil {
+		return err
+	}
+	settings.TelemetrySettings.Resource = resource
 
 	extensionConfig, err := rargs.Convert(e.opts)
 	if err != nil {

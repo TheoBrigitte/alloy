@@ -5,6 +5,8 @@ aliases:
 description: Learn about discovery.docker
 labels:
   stage: general-availability
+  products:
+    - oss
 title: discovery.docker
 ---
 
@@ -33,7 +35,7 @@ You can use the following arguments with `discovery.docker`:
 | `bearer_token`           | `secret`            | Bearer token to authenticate with.                                                                                  |               | no       |
 | `enable_http2`           | `bool`              | Whether HTTP2 is supported for requests.                                                                            | `true`        | no       |
 | `follow_redirects`       | `bool`              | Whether redirects returned by the server should be followed.                                                        | `true`        | no       |
-| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |                      | no       |
+| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.                             |               | no       |
 | `host_networking_host`   | `string`            | Host to use if the container is in host networking mode.                                                            | `"localhost"` | no       |
 | `match_first_network`    | `bool`              | Match the first network if the container has multiple networks defined, thus avoiding collecting duplicate targets. | `true`        | no       |
 | `no_proxy`               | `string`            | Comma-separated list of IP addresses, CIDR notations, and domain names to exclude from proxying.                    |               | no       |
@@ -43,21 +45,22 @@ You can use the following arguments with `discovery.docker`:
 | `proxy_url`              | `string`            | HTTP proxy to send requests through.                                                                                |               | no       |
 | `refresh_interval`       | `duration`          | Frequency to refresh list of containers.                                                                            | `"1m"`        | no       |
 
- At most, one of the following can be provided:
+At most, one of the following can be provided:
 
-* [`authorization`][authorization] block
-* [`basic_auth`][basic_auth] block
-* [`bearer_token_file`][arguments] argument
-* [`bearer_token`][arguments] argument
-* [`oauth2`][oauth2] block
+* [`authorization`](#authorization) block
+* [`basic_auth`](#basic_auth) block
+* [`bearer_token_file`](#arguments) argument
+* [`bearer_token`](#arguments) argument
+* [`oauth2`](#oauth2) block
 
-[arguments]: #arguments
 
 {{< docs/shared lookup="reference/components/http-client-proxy-config-description.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
 ## Blocks
 
 You can use the following blocks with `discovery.docker`:
+
+{{< docs/alloy-config >}}
 
 | Block                                 | Description                                                | Required |
 | ------------------------------------- | ---------------------------------------------------------- | -------- |
@@ -68,14 +71,13 @@ You can use the following blocks with `discovery.docker`:
 | `oauth2` > [`tls_config`][tls_config] | Configure TLS settings for connecting to the endpoint.     | no       |
 | [`tls_config`][tls_config]            | Configure TLS settings for connecting to the endpoint.     | no       |
 
-The > symbol indicates deeper levels of nesting.
-For example, `oauth2` > `tls_config` refers to a `tls_config` block defined inside an `oauth2` block.
-
 [filter]: #filter
 [basic_auth]: #basic_auth
 [authorization]: #authorization
 [oauth2]: #oauth2
 [tls_config]: #tls_config
+
+{{< /docs/alloy-config >}}
 
 ### `authorization`
 
@@ -101,11 +103,11 @@ You can specify the `filter` block multiple times to provide more than one filte
 
 Refer to [List containers][List containers] from the Docker Engine API documentation for the list of supported filters and their meaning.
 
-[List containers]: https://docs.docker.com/engine/api/v1.41/#tag/Container/operation/ContainerList
+[List containers]: https://docs.docker.com/reference/api/engine/latest/#tag/Container/operation/ContainerList
 
 ### `oauth2`
 
-The `oauth` block configures OAuth 2.0 authentication to the endpoint.
+The `oauth2` block configures OAuth 2.0 authentication to the endpoint.
 
 {{< docs/shared lookup="reference/components/oauth2-block.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
@@ -141,6 +143,12 @@ Each target includes the following labels:
 * `__meta_docker_port_public`: The publicly exposed port from the container, if a port mapping exists.
 
 Each discovered container maps to one target per unique combination of networks and port mappings used by the container.
+
+{{< admonition type="note" >}}
+{{< param "PRODUCT_NAME" >}} sanitizes Docker label names in `__meta_docker_container_label_<labelname>` and `__meta_docker_network_label_<labelname>` to comply with Prometheus label naming requirements.
+The component converts dots and other non-alphanumeric characters to underscores. Underscores remain unchanged.
+For example, a Docker label `com.example.app.name` becomes `__meta_docker_container_label_com_example_app_name`.
+{{< /admonition >}}
 
 ## Component health
 

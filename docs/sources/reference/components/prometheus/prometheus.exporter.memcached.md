@@ -5,6 +5,8 @@ aliases:
 description: Learn about prometheus.exporter.memcached
 labels:
   stage: general-availability
+  products:
+    - oss
 title: prometheus.exporter.memcached
 ---
 
@@ -32,11 +34,15 @@ You can use the following arguments with `prometheus.exporter.memcached`:
 
 You can use the following block with `prometheus.exporter.memcached`:
 
+{{< docs/alloy-config >}}
+
 | Block                      | Description                                             | Required |
 | -------------------------- | ------------------------------------------------------- | -------- |
 | [`tls_config`][tls_config] | TLS configuration for requests to the Memcached server. | no       |
 
 [tls_config]: #tls_config
+
+{{< /docs/alloy-config >}}
 
 ### `tls_config`
 
@@ -70,7 +76,7 @@ prometheus.exporter.memcached "example" {
 }
 
 prometheus.scrape "example" {
-  targets    = [prometheus.exporter.memcached.example.targets]
+  targets    = prometheus.exporter.memcached.example.targets
   forward_to = [prometheus.remote_write.demo.receiver]
 }
 

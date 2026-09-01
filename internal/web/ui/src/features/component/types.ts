@@ -1,4 +1,4 @@
-import { AttrStmt, Body as AlloyBody } from '../alloy-syntax-js/types';
+import { type AttrStmt, type Body as AlloyBody } from '../alloy-syntax-js/types';
 
 /**
  * ComponentInfo is high-level information for a component.
@@ -52,6 +52,11 @@ export interface ComponentInfo {
    * Used to indicate if live debugging is available for the component
    */
   liveDebuggingEnabled: boolean;
+
+  /**
+   * Module IDs created by this component when it is a module loader / custom component.
+   */
+  createdModuleIDs?: string[];
 }
 
 /**

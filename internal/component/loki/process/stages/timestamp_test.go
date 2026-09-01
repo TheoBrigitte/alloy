@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-kit/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/grafana/alloy/internal/featuregate"
+	"github.com/grafana/alloy/internal/runtime/logging"
 	"github.com/grafana/alloy/internal/util"
 )
 
@@ -45,7 +45,7 @@ var testTimestampLogLineWithMissingKey = `
 
 func TestTimestampPipeline(t *testing.T) {
 	logger := util.TestAlloyLogger(t)
-	pl, err := NewPipeline(logger, loadConfig(testTimestampAlloy), nil, prometheus.DefaultRegisterer, featuregate.StabilityGenerallyAvailable)
+	pl, err := NewPipeline(logger.Slog(), loadConfig(testTimestampAlloy), prometheus.DefaultRegisterer, featuregate.StabilityGenerallyAvailable)
 	require.NoError(t, err)
 
 	out := processEntries(pl, newEntry(nil, nil, testTimestampLogLine, time.Now()))[0]
@@ -60,13 +60,13 @@ var (
 
 func TestPipelineWithMissingKey_Timestamp(t *testing.T) {
 	var buf bytes.Buffer
-	w := log.NewSyncWriter(&buf)
-	logger := log.NewLogfmtLogger(w)
-	pl, err := NewPipeline(logger, loadConfig(testTimestampAlloy), nil, prometheus.DefaultRegisterer, featuregate.StabilityGenerallyAvailable)
+	logger, err := logging.New(&buf, logging.Options{Level: logging.LevelDebug, Format: logging.FormatLogfmt})
+	require.NoError(t, err)
+	pl, err := NewPipeline(logger.Slog(), loadConfig(testTimestampAlloy), prometheus.DefaultRegisterer, featuregate.StabilityGenerallyAvailable)
 	require.NoError(t, err)
 
 	_ = processEntries(pl, newEntry(nil, nil, testTimestampLogLineWithMissingKey, time.Now()))
-	expectedLog := fmt.Sprintf("level=debug msg=\"%s\" err=\"can't convert <nil> to string\" type=null", ErrTimestampConversionFailed)
+	expectedLog := fmt.Sprintf("level=debug msg=\"%s\" stage=timestamp err=\"can't convert <nil> to string\" type=<nil>", ErrTimestampConversionFailed)
 	if !(strings.Contains(buf.String(), expectedLog)) {
 		t.Errorf("\nexpected: %s\n+actual: %s", expectedLog, buf.String())
 	}
@@ -109,16 +109,17 @@ func TestTimestampValidation(t *testing.T) {
 			testString:   "2012-11-01T22:08:41-04:00",
 			expectedTime: time.Date(2012, 11, 01, 22, 8, 41, 0, time.FixedZone("", -4*60*60)),
 		},
-		"sets default action on failure": {
+		"sets default action on failure and on duplicate timestamp": {
 			config: &TimestampConfig{
 				Source: "source1",
 				Format: time.RFC3339,
 			},
 			err: nil,
 			expectedConfig: &TimestampConfig{
-				Source:          "source1",
-				Format:          time.RFC3339,
-				ActionOnFailure: "fudge",
+				Source:                     "source1",
+				Format:                     time.RFC3339,
+				ActionOnFailure:            "fudge",
+				ActionOnDuplicateTimestamp: "fudge",
 			},
 		},
 		"custom format with year": {
@@ -166,6 +167,14 @@ func TestTimestampValidation(t *testing.T) {
 			},
 			err: fmt.Errorf(ErrInvalidActionOnFailure.Error(), TimestampActionOnFailureOptions),
 		},
+		"should fail on invalid action on duplicate timestamp": {
+			config: &TimestampConfig{
+				Source:                     "source1",
+				Format:                     time.RFC3339,
+				ActionOnDuplicateTimestamp: "invalid",
+			},
+			err: fmt.Errorf(ErrInvalidActionOnDuplicateTimestamp.Error(), TimestampActionOnDuplicateTimestampOptions),
+		},
 		"fallback formats contains the format": {
 			config: &TimestampConfig{
 				Source:          "source1",
@@ -208,7 +217,7 @@ func TestTimestampValidation(t *testing.T) {
 func TestTimestampStage_Process(t *testing.T) {
 	tests := map[string]struct {
 		config    TimestampConfig
-		extracted map[string]interface{}
+		extracted map[string]any
 		expected  time.Time
 	}{
 		"set success": {
@@ -216,7 +225,7 @@ func TestTimestampStage_Process(t *testing.T) {
 				Source: "ts",
 				Format: time.RFC3339,
 			},
-			map[string]interface{}{
+			map[string]any{
 				"somethigelse": "notimportant",
 				"ts":           "2106-01-02T23:04:05-04:00",
 			},
@@ -227,7 +236,7 @@ func TestTimestampStage_Process(t *testing.T) {
 				Source: "ts",
 				Format: "Unix",
 			},
-			map[string]interface{}{
+			map[string]any{
 				"somethigelse": "notimportant",
 				"ts":           "1562708916",
 			},
@@ -238,7 +247,7 @@ func TestTimestampStage_Process(t *testing.T) {
 				Source: "ts",
 				Format: "Unix",
 			},
-			map[string]interface{}{
+			map[string]any{
 				"somethigelse": "notimportant",
 				"ts":           "1562708916.414123",
 			},
@@ -249,7 +258,7 @@ func TestTimestampStage_Process(t *testing.T) {
 				Source: "ts",
 				Format: "Unix",
 			},
-			map[string]interface{}{
+			map[string]any{
 				"somethigelse": "notimportant",
 				"ts":           "1562708916.000000123",
 			},
@@ -260,7 +269,7 @@ func TestTimestampStage_Process(t *testing.T) {
 				Source: "ts",
 				Format: "UnixMs",
 			},
-			map[string]interface{}{
+			map[string]any{
 				"somethigelse": "notimportant",
 				"ts":           "1562708916414",
 			},
@@ -271,7 +280,7 @@ func TestTimestampStage_Process(t *testing.T) {
 				Source: "ts",
 				Format: "UnixUs",
 			},
-			map[string]interface{}{
+			map[string]any{
 				"somethigelse": "notimportant",
 				"ts":           "1562708916414123",
 			},
@@ -282,7 +291,7 @@ func TestTimestampStage_Process(t *testing.T) {
 				Source: "ts",
 				Format: "UnixNs",
 			},
-			map[string]interface{}{
+			map[string]any{
 				"somethigelse": "notimportant",
 				"ts":           "1562708916000000123",
 			},
@@ -294,7 +303,7 @@ func TestTimestampStage_Process(t *testing.T) {
 				Format:   "2006-01-02 15:04:05",
 				Location: &validLocationString,
 			},
-			map[string]interface{}{
+			map[string]any{
 				"somethigelse": "notimportant",
 				"ts":           "2019-07-22 20:29:32",
 			},
@@ -306,7 +315,7 @@ func TestTimestampStage_Process(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			logger := util.TestAlloyLogger(t)
-			st, err := newTimestampStage(logger, test.config)
+			st, err := newTimestampStage(logger.Slog(), test.config)
 			require.NoError(t, err)
 
 			out := processEntries(st, newEntry(test.extracted, nil, "hello world", time.Now()))[0]
@@ -321,7 +330,7 @@ func TestTimestampStage_ProcessActionOnFailure(t *testing.T) {
 	type inputEntry struct {
 		timestamp time.Time
 		labels    model.LabelSet
-		extracted map[string]interface{}
+		extracted map[string]any
 	}
 
 	tests := map[string]struct {
@@ -336,12 +345,48 @@ func TestTimestampStage_ProcessActionOnFailure(t *testing.T) {
 				ActionOnFailure: TimestampActionOnFailureFudge,
 			},
 			inputEntries: []inputEntry{
-				{timestamp: time.Unix(1, 0), extracted: map[string]interface{}{"time": "2019-10-01T01:02:03.400000000Z"}},
-				{timestamp: time.Unix(1, 0), extracted: map[string]interface{}{"time": "2019-10-01T01:02:03.500000000Z"}},
+				{timestamp: time.Unix(1, 0), extracted: map[string]any{"time": "2019-10-01T01:02:03.400000000Z"}},
+				{timestamp: time.Unix(1, 0), extracted: map[string]any{"time": "2019-10-01T01:02:03.500000000Z"}},
 			},
 			expectedTimestamps: []time.Time{
 				mustParseTime(time.RFC3339Nano, "2019-10-01T01:02:03.400000000Z"),
 				mustParseTime(time.RFC3339Nano, "2019-10-01T01:02:03.500000000Z"),
+			},
+		},
+		"should add nanoseconds to identical parsed timestamps to preserve message order": {
+			config: TimestampConfig{
+				Source:                     "time",
+				Format:                     time.RFC3339Nano,
+				ActionOnFailure:            TimestampActionOnFailureFudge,
+				ActionOnDuplicateTimestamp: TimestampActionOnDuplicateTimestampFudge,
+			},
+			inputEntries: []inputEntry{
+				{timestamp: time.Unix(1, 0), extracted: map[string]any{"time": "2019-10-01T01:02:03.400000000Z"}},
+				{timestamp: time.Unix(1, 0), extracted: map[string]any{"time": "2019-10-01T01:02:03.400000000Z"}},
+				{timestamp: time.Unix(1, 0), extracted: map[string]any{"time": "2019-10-01T01:02:03.400000000Z"}},
+			},
+			expectedTimestamps: []time.Time{
+				mustParseTime(time.RFC3339Nano, "2019-10-01T01:02:03.400000000Z"),
+				mustParseTime(time.RFC3339Nano, "2019-10-01T01:02:03.400000001Z"),
+				mustParseTime(time.RFC3339Nano, "2019-10-01T01:02:03.400000002Z"),
+			},
+		},
+		"action_on_duplicate_timestamp=keep leaves identical timestamps unchanged": {
+			config: TimestampConfig{
+				Source:                     "time",
+				Format:                     time.RFC3339Nano,
+				ActionOnFailure:            TimestampActionOnFailureFudge,
+				ActionOnDuplicateTimestamp: TimestampActionOnDuplicateTimestampKeep,
+			},
+			inputEntries: []inputEntry{
+				{timestamp: time.Unix(1, 0), extracted: map[string]any{"time": "2019-10-01T01:02:03.400000000Z"}},
+				{timestamp: time.Unix(1, 0), extracted: map[string]any{"time": "2019-10-01T01:02:03.400000000Z"}},
+				{timestamp: time.Unix(1, 0), extracted: map[string]any{"time": "2019-10-01T01:02:03.400000000Z"}},
+			},
+			expectedTimestamps: []time.Time{
+				mustParseTime(time.RFC3339Nano, "2019-10-01T01:02:03.400000000Z"),
+				mustParseTime(time.RFC3339Nano, "2019-10-01T01:02:03.400000000Z"),
+				mustParseTime(time.RFC3339Nano, "2019-10-01T01:02:03.400000000Z"),
 			},
 		},
 		"should fudge the timestamp based on the last known value on timestamp parsing failure": {
@@ -350,9 +395,9 @@ func TestTimestampStage_ProcessActionOnFailure(t *testing.T) {
 				Format: time.RFC3339Nano,
 			},
 			inputEntries: []inputEntry{
-				{timestamp: time.Unix(1, 0), extracted: map[string]interface{}{"time": "2019-10-01T01:02:03.400000000Z"}},
-				{timestamp: time.Unix(1, 0), extracted: map[string]interface{}{}},
-				{timestamp: time.Unix(1, 0), extracted: map[string]interface{}{}},
+				{timestamp: time.Unix(1, 0), extracted: map[string]any{"time": "2019-10-01T01:02:03.400000000Z"}},
+				{timestamp: time.Unix(1, 0), extracted: map[string]any{}},
+				{timestamp: time.Unix(1, 0), extracted: map[string]any{}},
 			},
 			expectedTimestamps: []time.Time{
 				mustParseTime(time.RFC3339Nano, "2019-10-01T01:02:03.400000000Z"),
@@ -366,11 +411,11 @@ func TestTimestampStage_ProcessActionOnFailure(t *testing.T) {
 				Format: time.RFC3339Nano,
 			},
 			inputEntries: []inputEntry{
-				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"filename": "/1.log"}, extracted: map[string]interface{}{"time": "2019-10-01T01:02:03.400000000Z"}},
-				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"filename": "/2.log"}, extracted: map[string]interface{}{"time": "2019-10-01T01:02:03.800000000Z"}},
-				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"filename": "/1.log"}, extracted: map[string]interface{}{}},
-				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"filename": "/2.log"}, extracted: map[string]interface{}{}},
-				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"filename": "/1.log"}, extracted: map[string]interface{}{}},
+				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"filename": "/1.log"}, extracted: map[string]any{"time": "2019-10-01T01:02:03.400000000Z"}},
+				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"filename": "/2.log"}, extracted: map[string]any{"time": "2019-10-01T01:02:03.800000000Z"}},
+				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"filename": "/1.log"}, extracted: map[string]any{}},
+				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"filename": "/2.log"}, extracted: map[string]any{}},
+				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"filename": "/1.log"}, extracted: map[string]any{}},
 			},
 			expectedTimestamps: []time.Time{
 				mustParseTime(time.RFC3339Nano, "2019-10-01T01:02:03.400000000Z"),
@@ -386,8 +431,8 @@ func TestTimestampStage_ProcessActionOnFailure(t *testing.T) {
 				Format: time.RFC3339Nano,
 			},
 			inputEntries: []inputEntry{
-				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"filename": "/1.log"}, extracted: map[string]interface{}{"time": "2019-10-01T01:02:03.400000000Z"}},
-				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"filename": "/2.log"}, extracted: map[string]interface{}{}},
+				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"filename": "/1.log"}, extracted: map[string]any{"time": "2019-10-01T01:02:03.400000000Z"}},
+				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"filename": "/2.log"}, extracted: map[string]any{}},
 			},
 			expectedTimestamps: []time.Time{
 				mustParseTime(time.RFC3339Nano, "2019-10-01T01:02:03.400000000Z"),
@@ -401,8 +446,8 @@ func TestTimestampStage_ProcessActionOnFailure(t *testing.T) {
 				ActionOnFailure: TimestampActionOnFailureSkip,
 			},
 			inputEntries: []inputEntry{
-				{timestamp: time.Unix(1, 0), extracted: map[string]interface{}{"time": "2019-10-01T01:02:03.400000000Z"}},
-				{timestamp: time.Unix(1, 0), extracted: map[string]interface{}{}},
+				{timestamp: time.Unix(1, 0), extracted: map[string]any{"time": "2019-10-01T01:02:03.400000000Z"}},
+				{timestamp: time.Unix(1, 0), extracted: map[string]any{}},
 			},
 			expectedTimestamps: []time.Time{
 				mustParseTime(time.RFC3339Nano, "2019-10-01T01:02:03.400000000Z"),
@@ -416,12 +461,12 @@ func TestTimestampStage_ProcessActionOnFailure(t *testing.T) {
 				ActionOnFailure: TimestampActionOnFailureFudge,
 			},
 			inputEntries: []inputEntry{
-				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"app": "m", "uniq0": "1", "uniq1": "1"}, extracted: map[string]interface{}{"time": "2019-10-01T01:02:03.400000000Z"}},
-				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"app": "l", "uniq0": "0", "uniq1": "1"}, extracted: map[string]interface{}{"time": "2019-10-01T01:02:03.800000000Z"}},
-				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"app": "m", "uniq0": "1", "uniq1": "1"}, extracted: map[string]interface{}{}},
-				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"app": "l", "uniq0": "0", "uniq1": "1"}, extracted: map[string]interface{}{}},
-				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"app": "m", "uniq0": "1", "uniq1": "1"}, extracted: map[string]interface{}{}},
-				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"app": "l", "uniq0": "0", "uniq1": "1"}, extracted: map[string]interface{}{}},
+				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"app": "m", "uniq0": "1", "uniq1": "1"}, extracted: map[string]any{"time": "2019-10-01T01:02:03.400000000Z"}},
+				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"app": "l", "uniq0": "0", "uniq1": "1"}, extracted: map[string]any{"time": "2019-10-01T01:02:03.800000000Z"}},
+				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"app": "m", "uniq0": "1", "uniq1": "1"}, extracted: map[string]any{}},
+				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"app": "l", "uniq0": "0", "uniq1": "1"}, extracted: map[string]any{}},
+				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"app": "m", "uniq0": "1", "uniq1": "1"}, extracted: map[string]any{}},
+				{timestamp: time.Unix(1, 0), labels: model.LabelSet{"app": "l", "uniq0": "0", "uniq1": "1"}, extracted: map[string]any{}},
 			},
 			expectedTimestamps: []time.Time{
 				mustParseTime(time.RFC3339Nano, "2019-10-01T01:02:03.400000000Z"),
@@ -444,7 +489,7 @@ func TestTimestampStage_ProcessActionOnFailure(t *testing.T) {
 			require.Equal(t, len(testData.inputEntries), len(testData.expectedTimestamps))
 
 			logger := util.TestAlloyLogger(t)
-			s, err := newTimestampStage(logger, testData.config)
+			s, err := newTimestampStage(logger.Slog(), testData.config)
 			require.NoError(t, err)
 
 			for i, inputEntry := range testData.inputEntries {

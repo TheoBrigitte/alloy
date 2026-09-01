@@ -1,8 +1,9 @@
 package kubernetes
 
 import (
-	"github.com/go-kit/log"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
+	"log/slog"
+	"time"
+
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 )
@@ -18,14 +19,19 @@ type EventType string
 
 const (
 	EventTypeResourceChanged EventType = "resource-changed"
+
+	// RulerSyncTimeout is the timeout applied to remote ruler API calls (e.g.
+	// listing rule groups) to prevent the event loop from blocking indefinitely
+	// on transient network issues.
+	RulerSyncTimeout = 30 * time.Second
 )
 
 type queuedEventHandler struct {
-	log   log.Logger
+	log   *slog.Logger
 	queue workqueue.TypedRateLimitingInterface[Event]
 }
 
-func NewQueuedEventHandler(log log.Logger, queue workqueue.TypedRateLimitingInterface[Event]) *queuedEventHandler {
+func NewQueuedEventHandler(log *slog.Logger, queue workqueue.TypedRateLimitingInterface[Event]) *queuedEventHandler {
 	return &queuedEventHandler{
 		log:   log,
 		queue: queue,
@@ -33,24 +39,24 @@ func NewQueuedEventHandler(log log.Logger, queue workqueue.TypedRateLimitingInte
 }
 
 // OnAdd implements the cache.ResourceEventHandler interface.
-func (c *queuedEventHandler) OnAdd(obj interface{}, _ bool) {
+func (c *queuedEventHandler) OnAdd(obj any, _ bool) {
 	c.publishEvent(obj)
 }
 
 // OnUpdate implements the cache.ResourceEventHandler interface.
-func (c *queuedEventHandler) OnUpdate(oldObj, newObj interface{}) {
+func (c *queuedEventHandler) OnUpdate(oldObj, newObj any) {
 	c.publishEvent(newObj)
 }
 
 // OnDelete implements the cache.ResourceEventHandler interface.
-func (c *queuedEventHandler) OnDelete(obj interface{}) {
+func (c *queuedEventHandler) OnDelete(obj any) {
 	c.publishEvent(obj)
 }
 
-func (c *queuedEventHandler) publishEvent(obj interface{}) {
+func (c *queuedEventHandler) publishEvent(obj any) {
 	key, err := cache.MetaNamespaceKeyFunc(obj)
 	if err != nil {
-		level.Error(c.log).Log("msg", "failed to get key for object", "err", err)
+		c.log.Error("failed to get key for object", "err", err)
 		return
 	}
 

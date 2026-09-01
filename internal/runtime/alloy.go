@@ -48,6 +48,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -56,11 +57,10 @@ import (
 
 	"github.com/grafana/alloy/internal/component"
 	"github.com/grafana/alloy/internal/featuregate"
+	"github.com/grafana/alloy/internal/nodeconf/importsource"
 	"github.com/grafana/alloy/internal/runtime/internal/controller"
-	"github.com/grafana/alloy/internal/runtime/internal/importsource"
 	"github.com/grafana/alloy/internal/runtime/internal/worker"
 	"github.com/grafana/alloy/internal/runtime/logging"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 	"github.com/grafana/alloy/internal/runtime/tracing"
 	"github.com/grafana/alloy/internal/service"
 	"github.com/grafana/alloy/internal/util"
@@ -114,11 +114,17 @@ type Options struct {
 
 	// EnableCommunityComps enables the use of community components.
 	EnableCommunityComps bool
+
+	// TaskShutdownDeadline is the maximum duration to wait for a component to shut down before giving up and logging an error.
+	TaskShutdownDeadline time.Duration
+
+	// OnImportContent is a hook that is invoked with the parsed content of every imported module.
+	OnImportContent importsource.ImportContentHook
 }
 
 // Runtime is the Alloy system.
 type Runtime struct {
-	log    *logging.Logger
+	log    *slog.Logger
 	tracer *tracing.Tracer
 	opts   controllerOptions
 
@@ -129,17 +135,19 @@ type Runtime struct {
 
 	loadFinished chan struct{}
 
-	loadMut    sync.RWMutex
-	loadedOnce atomic.Bool
+	loadMut      sync.RWMutex
+	loadedOnce   atomic.Bool
+	loadComplete atomic.Bool
 }
 
 // New creates a new, unstarted Alloy controller. Call Run to run the controller.
-func New(o Options) *Runtime {
+func New(o Options) (*Runtime, error) {
 	return newController(controllerOptions{
-		Options:        o,
-		ModuleRegistry: newModuleRegistry(),
-		IsModule:       false, // We are creating a new root controller.
-		WorkerPool:     worker.NewDefaultWorkerPool(),
+		Options:              o,
+		ModuleRegistry:       newModuleRegistry(),
+		IsModule:             false, // We are creating a new root controller.
+		WorkerPool:           worker.NewDefaultWorkerPool(),
+		TaskShutdownDeadline: o.TaskShutdownDeadline,
 	})
 }
 
@@ -153,14 +161,16 @@ type controllerOptions struct {
 	IsModule          bool               // Whether this controller is for a module.
 	// A worker pool to evaluate components asynchronously. A default one will be created if this is nil.
 	WorkerPool worker.Pool
+	// TaskShutdownDeadline is the maximum duration to wait for a component to shut down before giving up and logging an error.
+	TaskShutdownDeadline time.Duration
 }
 
 // newController creates a new, unstarted Alloy controller with a specific
 // moduleRegistry. Modules created by the controller will be passed to the
 // given modReg.
-func newController(o controllerOptions) *Runtime {
+func newController(o controllerOptions) (*Runtime, error) {
 	var (
-		log        = o.Logger
+		logger     = o.Logger.Slog().With("controller_id", o.ControllerID)
 		tracer     = o.Tracer
 		workerPool = o.WorkerPool
 	)
@@ -175,17 +185,17 @@ func newController(o controllerOptions) *Runtime {
 	}
 
 	if workerPool == nil {
-		level.Info(log).Log("msg", "no worker pool provided, creating a default pool", "controller", o.ControllerID)
+		logger.Info("no worker pool provided, creating a default pool")
 		workerPool = worker.NewDefaultWorkerPool()
 	}
 
 	f := &Runtime{
-		log:    log,
+		log:    logger,
 		tracer: tracer,
 		opts:   o,
 
 		updateQueue: controller.NewQueue(),
-		sched:       controller.NewScheduler(log),
+		sched:       controller.NewScheduler(logger, o.TaskShutdownDeadline),
 
 		modules: o.ModuleRegistry,
 
@@ -194,13 +204,15 @@ func newController(o controllerOptions) *Runtime {
 
 	serviceMap := controller.NewServiceMap(o.Services)
 
-	f.loader = controller.NewLoader(controller.LoaderOptions{
+	loader, err := controller.NewLoader(controller.LoaderOptions{
 		ComponentGlobals: controller.ComponentGlobals{
-			Logger:               log,
+			// This needs to remain logging.Logger to support dynamic log changes.
+			Logger:               o.Logger,
 			TraceProvider:        tracer,
 			DataPath:             o.DataPath,
 			MinStability:         o.MinStability,
 			EnableCommunityComps: o.EnableCommunityComps,
+			OnImportContent:      o.OnImportContent,
 			OnBlockNodeUpdate: func(cn controller.BlockNode) {
 				// Changed node should be queued for reevaluation.
 				f.updateQueue.Enqueue(&controller.QueuedNode{Node: cn, LastUpdatedTime: time.Now()})
@@ -219,7 +231,7 @@ func newController(o controllerOptions) *Runtime {
 				return newModuleController(&moduleControllerOptions{
 					ComponentRegistry:    o.ComponentRegistry,
 					ModuleRegistry:       o.ModuleRegistry,
-					Logger:               log,
+					Logger:               o.Logger,
 					Tracer:               tracer,
 					Reg:                  reg,
 					DataPath:             o.DataPath,
@@ -230,7 +242,7 @@ func newController(o controllerOptions) *Runtime {
 					WorkerPool:           workerPool,
 				})
 			},
-			GetServiceData: func(name string) (interface{}, error) {
+			GetServiceData: func(name string) (any, error) {
 				svc, found := serviceMap.Get(name)
 				if !found {
 					return nil, fmt.Errorf("service %q does not exist", name)
@@ -244,16 +256,25 @@ func newController(o controllerOptions) *Runtime {
 		ComponentRegistry: o.ComponentRegistry,
 		WorkerPool:        workerPool,
 	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to build loader: %w", err)
+	}
 
-	return f
+	f.loader = loader
+
+	return f, nil
 }
 
 // Run starts the Alloy controller, blocking until the provided context is
 // canceled. Run must only be called once.
 func (f *Runtime) Run(ctx context.Context) {
-	defer func() { _ = f.sched.Close() }()
-	defer f.loader.Cleanup(!f.opts.IsModule)
-	defer level.Debug(f.log).Log("msg", "Alloy controller exiting")
+	defer func() {
+		f.log.Debug("Alloy controller exiting")
+		f.loader.Cleanup(!f.opts.IsModule)
+		f.sched.Stop()
+	}()
+
+	f.log.Debug("Running alloy controller")
 
 	for {
 		select {
@@ -267,40 +288,11 @@ func (f *Runtime) Run(ctx context.Context) {
 			all := f.updateQueue.DequeueAll()
 			f.loader.EvaluateDependants(ctx, all)
 		case <-f.loadFinished:
-			level.Info(f.log).Log("msg", "scheduling loaded components and services")
-
-			var (
-				components = f.loader.Components()
-				services   = f.loader.Services()
-				imports    = f.loader.Imports()
-				forEachs   = f.loader.ForEachs()
-
-				runnables = make([]controller.RunnableNode, 0, len(components)+len(services)+len(imports))
-			)
-			for _, c := range components {
-				runnables = append(runnables, c)
+			f.log.Info("scheduling loaded components and services")
+			if err := f.sched.Synchronize(f.loader.Graph()); err != nil {
+				f.log.Error("failed to load components and services", "err", err)
 			}
-
-			for _, i := range imports {
-				runnables = append(runnables, i)
-			}
-
-			for _, fe := range forEachs {
-				runnables = append(runnables, fe)
-			}
-
-			// Only the root controller should run services, since modules share the
-			// same service instance as the root.
-			if !f.opts.IsModule {
-				for _, svc := range services {
-					runnables = append(runnables, svc)
-				}
-			}
-
-			err := f.sched.Synchronize(runnables)
-			if err != nil {
-				level.Error(f.log).Log("msg", "failed to load components and services", "err", err)
-			}
+			f.loadComplete.Store(true)
 		}
 	}
 }
@@ -315,14 +307,14 @@ func (f *Runtime) Run(ctx context.Context) {
 func (f *Runtime) LoadSource(source *Source, args map[string]any, configPath string) error {
 	modulePath, err := util.ExtractDirPath(configPath)
 	if err != nil {
-		level.Warn(f.log).Log("msg", "failed to extract directory path from configPath", "configPath", configPath, "err", err)
+		f.log.Warn("failed to extract directory path from configPath", "configPath", configPath, "err", err)
 	}
 	return f.applyLoaderConfig(controller.ApplyOptions{
 		Args:            args,
 		ComponentBlocks: source.Components(),
 		ConfigBlocks:    source.Configs(),
 		DeclareBlocks:   source.Declares(),
-		ArgScope: vm.NewScope(map[string]interface{}{
+		ArgScope: vm.NewScope(map[string]any{
 			importsource.ModulePath: modulePath,
 		}),
 	})
@@ -344,6 +336,8 @@ func (f *Runtime) applyLoaderConfig(applyOptions controller.ApplyOptions) error 
 	f.loadMut.Lock()
 	defer f.loadMut.Unlock()
 
+	f.loadComplete.Store(false)
+
 	diags := f.loader.Apply(applyOptions)
 	if !f.loadedOnce.Load() && diags.HasErrors() {
 		// The first call to Load should not run any components if there were
@@ -363,4 +357,9 @@ func (f *Runtime) applyLoaderConfig(applyOptions controller.ApplyOptions) error 
 // Ready returns whether the Alloy controller has finished its initial load.
 func (f *Runtime) Ready() bool {
 	return f.loadedOnce.Load()
+}
+
+// LoadComplete returns true when the components loaded via LoadSource have been scheduled and are running. Used in testing.
+func (f *Runtime) LoadComplete() bool {
+	return f.loadComplete.Load()
 }

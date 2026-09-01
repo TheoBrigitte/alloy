@@ -13,6 +13,7 @@ import (
 	"github.com/grafana/alloy/internal/component/otelcol/receiver"
 	"github.com/grafana/alloy/internal/featuregate"
 	otelcomponent "go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/pipeline"
 	"go.opentelemetry.io/collector/receiver/otlpreceiver"
 )
@@ -56,22 +57,22 @@ type HTTPConfigArguments struct {
 }
 
 // Convert converts args into the upstream type.
-func (args *HTTPConfigArguments) Convert() (*otlpreceiver.HTTPConfig, error) {
+func (args *HTTPConfigArguments) Convert() (configoptional.Optional[otlpreceiver.HTTPConfig], error) {
 	if args == nil {
-		return nil, nil
+		return configoptional.None[otlpreceiver.HTTPConfig](), nil
 	}
 
 	httpServerArgs, err := args.HTTPServerArguments.Convert()
 	if err != nil {
-		return nil, err
+		return configoptional.None[otlpreceiver.HTTPConfig](), err
 	}
 
-	return &otlpreceiver.HTTPConfig{
-		ServerConfig:   httpServerArgs,
-		TracesURLPath:  args.TracesURLPath,
-		MetricsURLPath: args.MetricsURLPath,
-		LogsURLPath:    args.LogsURLPath,
-	}, nil
+	return configoptional.Some(otlpreceiver.HTTPConfig{
+		ServerConfig:   *httpServerArgs.Get(),
+		TracesURLPath:  otlpreceiver.SanitizedURLPath(args.TracesURLPath),
+		MetricsURLPath: otlpreceiver.SanitizedURLPath(args.MetricsURLPath),
+		LogsURLPath:    otlpreceiver.SanitizedURLPath(args.LogsURLPath),
+	}), nil
 }
 
 var _ receiver.Arguments = Arguments{}
@@ -189,6 +190,9 @@ func (args *HTTPConfigArguments) SetToDefault() {
 			Endpoint:              "0.0.0.0:4318",
 			CompressionAlgorithms: append([]string(nil), otelcol.DefaultCompressionAlgorithms...),
 			CORS:                  &otelcol.CORSArguments{},
+			IdleTimeout:           otelcol.DefaultHTTPServerIdleTimeout,
+			ReadHeaderTimeout:     otelcol.DefaultHTTPServerReadHeaderTimeout,
+			WriteTimeout:          otelcol.DefaultHTTPServerWriteTimeout,
 		},
 		MetricsURLPath: "/v1/metrics",
 		LogsURLPath:    "/v1/logs",

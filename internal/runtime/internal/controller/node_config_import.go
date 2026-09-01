@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"maps"
 	"path"
 	"path/filepath"
@@ -13,13 +14,11 @@ import (
 
 	"go.uber.org/atomic"
 
-	"github.com/go-kit/log"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/grafana/alloy/internal/component"
+	"github.com/grafana/alloy/internal/nodeconf/importsource"
 	"github.com/grafana/alloy/internal/runner"
-	"github.com/grafana/alloy/internal/runtime/internal/importsource"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 	"github.com/grafana/alloy/internal/runtime/tracing"
 	"github.com/grafana/alloy/syntax/ast"
 	"github.com/grafana/alloy/syntax/parser"
@@ -43,7 +42,7 @@ type ImportConfigNode struct {
 	registry      *prometheus.Registry
 
 	OnBlockNodeUpdate func(cn BlockNode) // notifies the controller or the parent for reevaluation
-	logger            log.Logger
+	logger            *slog.Logger
 
 	importChildrenUpdateChan chan struct{} // used to trigger an update of the running children
 
@@ -83,10 +82,10 @@ func NewImportConfigNode(block *ast.BlockStmt, globals ComponentGlobals, sourceT
 		globals:                  globals,
 		block:                    block,
 		OnBlockNodeUpdate:        globals.OnBlockNodeUpdate,
+		logger:                   globals.Logger.Slog().With("config_path", path.Dir(globalID), "config_id", path.Base(globalID)),
 		importChildrenUpdateChan: make(chan struct{}, 1),
 	}
 	managedOpts := getImportManagedOptions(globals, cn)
-	cn.logger = managedOpts.Logger
 	cn.source = importsource.NewImportSource(sourceType, managedOpts, vm.New(block.Body), cn.onContentUpdate)
 	return cn
 }
@@ -96,14 +95,14 @@ func getImportManagedOptions(globals ComponentGlobals, cn *ImportConfigNode) com
 	parent, id := splitPath(cn.globalID)
 	return component.Options{
 		ID:     cn.globalID,
-		Logger: log.With(globals.Logger, "config_path", parent, "config_id", id),
+		Logger: globals.Logger.Slog().With("config_path", parent, "config_id", id),
 		Registerer: prometheus.WrapRegistererWith(prometheus.Labels{
 			"config_path": parent,
 			"config_id":   id,
 		}, cn.registry),
 		Tracer:   tracing.WrapTracer(globals.TraceProvider, cn.globalID),
 		DataPath: filepath.Join(globals.DataPath, cn.globalID),
-		GetServiceData: func(name string) (interface{}, error) {
+		GetServiceData: func(name string) (any, error) {
 			return globals.GetServiceData(name)
 		},
 	}
@@ -207,25 +206,27 @@ func (cn *ImportConfigNode) onContentUpdate(importedContent map[string]string) {
 		return
 	}
 
-	cn.importedContent = make(map[string]string)
-	for k, v := range importedContent {
-		cn.importedContent[k] = v
-	}
+	cn.importedContent = make(map[string]string, len(importedContent))
+	maps.Copy(cn.importedContent, importedContent)
 	cn.importedDeclares = make(map[string]ast.Body)
 	cn.importConfigNodesChildren = make(map[string]*ImportConfigNode)
 
 	for f, ic := range importedContent {
 		parsedImportedContent, err := parser.ParseFile(cn.label, []byte(ic))
 		if err != nil {
-			level.Error(cn.logger).Log("msg", "failed to parse file on update", "file", f, "err", err)
+			cn.logger.Error("failed to parse file on update", "file", f, "err", err)
 			cn.setContentHealth(component.HealthTypeUnhealthy, fmt.Sprintf("imported content from %q cannot be parsed: %s", f, err))
 			return
+		}
+
+		if cn.globals.OnImportContent != nil {
+			cn.globals.OnImportContent(f, parsedImportedContent, cn.source)
 		}
 
 		// populate importedDeclares and importConfigNodesChildren
 		err = cn.processImportedContent(parsedImportedContent)
 		if err != nil {
-			level.Error(cn.logger).Log("msg", "failed to process imported content", "file", f, "err", err)
+			cn.logger.Error("failed to process imported content", "file", f, "err", err)
 			cn.setContentHealth(component.HealthTypeUnhealthy, fmt.Sprintf("imported content from %q is invalid: %s", f, err))
 			return
 		}
@@ -234,7 +235,7 @@ func (cn *ImportConfigNode) onContentUpdate(importedContent map[string]string) {
 	// evaluate the importConfigNodesChildren that have been created
 	err := cn.evaluateChildren()
 	if err != nil {
-		level.Error(cn.logger).Log("msg", "failed to evaluate nested import", "err", err)
+		cn.logger.Error("failed to evaluate nested import", "err", err)
 		cn.setContentHealth(component.HealthTypeUnhealthy, fmt.Sprintf("nested import block failed to evaluate: %s", err))
 		return
 	}
@@ -263,7 +264,7 @@ func (cn *ImportConfigNode) processImportedContent(content *ast.File) error {
 		switch componentName {
 		case declareType:
 			cn.processDeclareBlock(blockStmt)
-		case importsource.BlockImportFile, importsource.BlockImportString, importsource.BlockImportHTTP, importsource.BlockImportGit:
+		case importsource.BlockNameFile, importsource.BlockNameString, importsource.BlockNameHTTP, importsource.BlockNameGit:
 			err := cn.processImportBlock(blockStmt, componentName)
 			if err != nil {
 				return err
@@ -278,7 +279,7 @@ func (cn *ImportConfigNode) processImportedContent(content *ast.File) error {
 // processDeclareBlock stores the declare definition in the importedDeclares.
 func (cn *ImportConfigNode) processDeclareBlock(stmt *ast.BlockStmt) {
 	if _, ok := cn.importedDeclares[stmt.Label]; ok {
-		level.Error(cn.logger).Log("msg", "declare block redefined", "name", stmt.Label)
+		cn.logger.Error("declare block redefined", "name", stmt.Label)
 		return
 	}
 	cn.importedDeclares[stmt.Label] = stmt.Body
@@ -307,7 +308,7 @@ func (cn *ImportConfigNode) processImportBlock(stmt *ast.BlockStmt, fullName str
 // evaluateChildren evaluates the import nodes managed by this import node.
 func (cn *ImportConfigNode) evaluateChildren() error {
 	for _, child := range cn.importConfigNodesChildren {
-		err := child.Evaluate(vm.NewScope(map[string]interface{}{
+		err := child.Evaluate(vm.NewScope(map[string]any{
 			importsource.ModulePath: cn.source.ModulePath(),
 		}))
 		if err != nil {
@@ -365,7 +366,7 @@ func (cn *ImportConfigNode) Run(ctx context.Context) error {
 
 	err := updateTasks()
 	if err != nil {
-		level.Error(cn.logger).Log("msg", "import failed to run nested imports", "err", err)
+		cn.logger.Error("import failed to run nested imports", "err", err)
 		cn.setRunHealth(component.HealthTypeUnhealthy, fmt.Sprintf("error encountered while running nested import blocks: %s", err))
 		// the error is not fatal, the node can still run in unhealthy mode
 	}
@@ -391,7 +392,7 @@ func (cn *ImportConfigNode) run(errChan chan error, updateTasks func() error) er
 		case <-cn.importChildrenUpdateChan:
 			err := updateTasks()
 			if err != nil {
-				level.Error(cn.logger).Log("msg", "error encountered while updating nested import blocks", "err", err)
+				cn.logger.Error("error encountered while updating nested import blocks", "err", err)
 				cn.setRunHealth(component.HealthTypeUnhealthy, fmt.Sprintf("error encountered while updating nested import blocks: %s", err))
 				// the error is not fatal, the node can still run in unhealthy mode
 			} else {
@@ -436,7 +437,7 @@ func (cn *ImportConfigNode) ImportedDeclares() map[string]ast.Body {
 
 // Scope returns the scope associated with the import source.
 func (cn *ImportConfigNode) Scope() *vm.Scope {
-	return vm.NewScope(map[string]interface{}{
+	return vm.NewScope(map[string]any{
 		importsource.ModulePath: cn.source.ModulePath(),
 	})
 }
@@ -455,7 +456,7 @@ type childRunner struct {
 func (cr *childRunner) Run(ctx context.Context) {
 	err := cr.node.Run(ctx)
 	if err != nil {
-		level.Error(cr.node.logger).Log("msg", "nested import stopped running", "err", err)
+		cr.node.logger.Error("nested import stopped running", "err", err)
 		cr.node.setRunHealth(component.HealthTypeUnhealthy, fmt.Sprintf("nested import stopped running: %s", err))
 	}
 }

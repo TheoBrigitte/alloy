@@ -1,18 +1,43 @@
-package splunkhec_config
+package config
 
 import (
 	"errors"
 	"time"
 
+	"github.com/grafana/alloy/internal/component/otelcol"
+	otelcolCfg "github.com/grafana/alloy/internal/component/otelcol/config"
 	"github.com/grafana/alloy/syntax/alloytypes"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/splunkhecexporter"
+	translator "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/splunk"
+	otelcomponent "go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/configopaque"
-	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/config/configtls"
-	"go.opentelemetry.io/collector/exporter/exporterbatcher"
-	"go.opentelemetry.io/collector/exporter/exporterhelper"
+	"go.opentelemetry.io/collector/pipeline"
 )
+
+// OtelAttrsToHecArguments defines the mapping of attributes to HEC specific metadata.
+// This follows the same pattern as HecToOtelAttrsArguments in the receiver.
+type OtelAttrsToHecArguments struct {
+	// Source indicates the mapping of a specific unified model attribute value to the standard source field of a HEC event. Optional.
+	Source string `alloy:"source,attr,optional"`
+	// SourceType indicates the mapping of a specific unified model attribute value to the standard sourcetype field of a HEC event. Optional.
+	SourceType string `alloy:"sourcetype,attr,optional"`
+	// Index indicates the mapping of a specific unified model attribute value to the standard index field of a HEC event. Optional.
+	Index string `alloy:"index,attr,optional"`
+	// Host indicates the mapping of a specific unified model attribute value to the standard host field of a HEC event. Optional.
+	Host string `alloy:"host,attr,optional"`
+}
+
+// SetToDefault implements syntax.Defaulter.
+func (a *OtelAttrsToHecArguments) SetToDefault() {
+	*a = OtelAttrsToHecArguments{
+		Source:     "com.splunk.source",
+		SourceType: "com.splunk.sourcetype",
+		Index:      "com.splunk.index",
+		Host:       "host.name",
+	}
+}
 
 type SplunkHecClientArguments struct {
 	// Endpoint is the Splunk HEC endpoint to send data to.
@@ -35,11 +60,10 @@ type SplunkHecClientArguments struct {
 	DisableKeepAlives bool `alloy:"disable_keep_alives,attr,optional"`
 	// TLSSetting for the HTTP client.
 	InsecureSkipVerify bool `alloy:"insecure_skip_verify,attr,optional"`
+	// ForceAttemptHTTP2 for the HTTP client.
+	ForceAttemptHTTP2 bool `alloy:"force_attempt_http2,attr,optional"`
 }
 type SplunkConf struct {
-	// until https://github.com/open-telemetry/opentelemetry-collector/issues/8122 is resolved.
-	BatcherConfig BatcherConfig `alloy:"batcher,block,optional"`
-
 	// Experimental: This configuration is at the early stage of development and may change without backward compatibility
 	// until https://github.com/open-telemetry/opentelemetry-collector/issues/8122 is resolved.
 	// LogDataEnabled can be used to disable sending logs by the exporter.
@@ -89,36 +113,6 @@ type SplunkConf struct {
 	Telemetry SplunkHecTelemetry `alloy:"telemetry,block,optional"`
 }
 
-type BatcherConfig struct {
-	// Enabled indicates whether to not enqueue batches before sending to the consumerSender.
-	Enabled bool `alloy:"enabled,attr,optional"`
-
-	// FlushTimeout sets the time after which a batch will be sent regardless of its size.
-	FlushTimeout time.Duration `alloy:"flush_timeout,attr,optional"`
-
-	MinSize int    `alloy:"min_size,attr,optional"`
-	MaxSize int    `alloy:"max_size,attr,optional"`
-	Sizer   string `alloy:"sizer,attr,optional"`
-}
-
-func (args *BatcherConfig) Convert() *exporterbatcher.Config {
-	if args == nil {
-		return nil
-	}
-	sizer := exporterbatcher.SizerType{}
-	// ignore error here because we check for valid sizer in Validate()
-	_ = sizer.UnmarshalText([]byte(args.Sizer))
-	return &exporterbatcher.Config{
-		Enabled:      args.Enabled,
-		FlushTimeout: args.FlushTimeout,
-		SizeConfig: exporterbatcher.SizeConfig{
-			Sizer:   sizer,
-			MinSize: args.MinSize,
-			MaxSize: args.MaxSize,
-		},
-	}
-}
-
 type HecFields struct {
 	// SeverityText informs the exporter to map the severity text field to a specific HEC field.
 	SeverityText string `alloy:"severity_text,attr,optional"`
@@ -126,11 +120,11 @@ type HecFields struct {
 	SeverityNumber string `alloy:"severity_number,attr,optional"`
 }
 
-func (args *HecFields) Convert() *splunkhecexporter.OtelToHecFields {
+func (args *HecFields) Convert() *translator.OtelToHecFields {
 	if args == nil {
 		return nil
 	}
-	return &splunkhecexporter.OtelToHecFields{
+	return &translator.OtelToHecFields{
 		SeverityText:   args.SeverityText,
 		SeverityNumber: args.SeverityNumber,
 	}
@@ -181,10 +175,16 @@ func (args *SplunkHecTelemetry) Convert() *splunkhecexporter.HecTelemetry {
 
 // SplunkHecClientArguments defines the configuration for the Splunk HEC exporter.
 type SplunkHecArguments struct {
-	SplunkHecClientArguments SplunkHecClientArguments   `alloy:"client,block"`
-	QueueSettings            exporterhelper.QueueConfig `alloy:"queue,block,optional"`
-	RetrySettings            configretry.BackOffConfig  `alloy:"retry_on_failure,block,optional"`
-	Splunk                   SplunkConf                 `alloy:"splunk,block"`
+	SplunkHecClientArguments SplunkHecClientArguments `alloy:"client,block"`
+	QueueSettings            otelcol.QueueArguments   `alloy:"sending_queue,block,optional"`
+	RetrySettings            otelcol.RetryArguments   `alloy:"retry_on_failure,block,optional"`
+	Splunk                   SplunkConf               `alloy:"splunk,block"`
+
+	// OtelAttrsToHec creates a mapping from attributes to HEC specific metadata: source, sourcetype, index and host. Optional.
+	OtelAttrsToHec OtelAttrsToHecArguments `alloy:"otel_attrs_to_hec_metadata,block,optional"`
+
+	// DebugMetrics configures component internal metrics. Optional.
+	DebugMetrics otelcolCfg.DebugMetricsArguments `alloy:"debug_metrics,block,optional"`
 }
 
 func (args *SplunkHecClientArguments) Convert() *confighttp.ClientConfig {
@@ -201,7 +201,8 @@ func (args *SplunkHecClientArguments) Convert() *confighttp.ClientConfig {
 		MaxConnsPerHost:     args.MaxConnsPerHost,
 		IdleConnTimeout:     args.IdleConnTimeout,
 		DisableKeepAlives:   args.DisableKeepAlives,
-		TLSSetting: configtls.ClientConfig{
+		ForceAttemptHTTP2:   args.ForceAttemptHTTP2,
+		TLS: configtls.ClientConfig{
 			InsecureSkipVerify: args.InsecureSkipVerify,
 		},
 	}
@@ -211,6 +212,7 @@ func (args *SplunkHecClientArguments) SetToDefault() {
 	args.Timeout = 15 * time.Second
 	args.MaxIdleConns = 100
 	args.IdleConnTimeout = 90 * time.Second
+	args.ForceAttemptHTTP2 = true
 }
 
 func (args *SplunkHecClientArguments) Validate() error {
@@ -221,13 +223,6 @@ func (args *SplunkHecClientArguments) Validate() error {
 }
 
 func (args *SplunkConf) SetToDefault() {
-	args.BatcherConfig = BatcherConfig{
-		Enabled:      false,
-		FlushTimeout: 200 * time.Millisecond,
-		MinSize:      8192,
-		MaxSize:      0,
-		Sizer:        "items",
-	}
 	args.LogDataEnabled = true
 	args.ProfilingDataEnabled = true
 	args.Source = ""
@@ -264,23 +259,14 @@ func (args *SplunkConf) Validate() error {
 	if args.MaxContentLengthTraces > 838860800 {
 		return errors.New("max_content_length_traces must be less than 838860800")
 	}
-	if args.BatcherConfig.Sizer != "items" && args.BatcherConfig.Sizer != "bytes" && args.BatcherConfig.Sizer != "requests" {
-		return errors.New("sizer must be one of items, bytes, or requests")
-	}
-
 	return nil
 }
 
 // Convert converts args into the upstream type
-func (args *SplunkHecArguments) Convert() *splunkhecexporter.Config {
-	if args == nil {
-		return nil
-	}
-	return &splunkhecexporter.Config{
+func (args SplunkHecArguments) Convert() (otelcomponent.Config, error) {
+	cfg := &splunkhecexporter.Config{
 		ClientConfig:            *args.SplunkHecClientArguments.Convert(),
-		QueueSettings:           args.QueueSettings,
-		BackOffConfig:           args.RetrySettings,
-		BatcherConfig:           *args.Splunk.BatcherConfig.Convert(),
+		BackOffConfig:           *args.RetrySettings.Convert(),
 		LogDataEnabled:          args.Splunk.LogDataEnabled,
 		ProfilingDataEnabled:    args.Splunk.ProfilingDataEnabled,
 		Token:                   configopaque.String(args.Splunk.Token),
@@ -302,11 +288,53 @@ func (args *SplunkHecArguments) Convert() *splunkhecexporter.Config {
 		Heartbeat:               *args.Splunk.Heartbeat.Convert(),
 		Telemetry:               *args.Splunk.Telemetry.Convert(),
 	}
+
+	q, err := args.QueueSettings.Convert()
+	if err != nil {
+		return nil, err
+	}
+	cfg.QueueSettings = q
+
+	cfg.OtelAttrsToHec.Source = args.OtelAttrsToHec.Source
+	cfg.OtelAttrsToHec.SourceType = args.OtelAttrsToHec.SourceType
+	cfg.OtelAttrsToHec.Index = args.OtelAttrsToHec.Index
+	cfg.OtelAttrsToHec.Host = args.OtelAttrsToHec.Host
+
+	return cfg, nil
 }
 
 func (args *SplunkHecArguments) SetToDefault() {
+	args.DebugMetrics.SetToDefault()
 	args.SplunkHecClientArguments.SetToDefault()
-	args.QueueSettings = exporterhelper.NewDefaultQueueConfig()
-	args.RetrySettings = configretry.NewDefaultBackOffConfig()
+	args.QueueSettings.SetToDefault()
+	args.RetrySettings.SetToDefault()
 	args.Splunk.SetToDefault()
+	args.OtelAttrsToHec.SetToDefault()
+}
+
+func (args *SplunkHecArguments) Validate() error {
+	if err := args.SplunkHecClientArguments.Validate(); err != nil {
+		return err
+	}
+	if err := args.Splunk.Validate(); err != nil {
+		return err
+	}
+	if err := args.QueueSettings.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (args SplunkHecArguments) DebugMetricsConfig() otelcolCfg.DebugMetricsArguments {
+	return args.DebugMetrics
+}
+
+// Extensions implements exporter.Arguments.
+func (args SplunkHecArguments) Extensions() map[otelcomponent.ID]otelcomponent.Component {
+	return args.QueueSettings.Extensions()
+}
+
+// Exporters implements exporter.Arguments.
+func (args SplunkHecArguments) Exporters() map[pipeline.Signal]map[otelcomponent.ID]otelcomponent.Component {
+	return nil
 }

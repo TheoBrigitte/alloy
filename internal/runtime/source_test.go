@@ -62,7 +62,6 @@ func TestParseSource_Defaults(t *testing.T) {
 }
 
 func TestParseSources_DuplicateComponent(t *testing.T) {
-	defer verifyNoGoroutineLeaks(t)
 	content := `
         logging {
 		    format = "json"
@@ -88,7 +87,8 @@ func TestParseSources_DuplicateComponent(t *testing.T) {
 		"t2": []byte(content2),
 	})
 	require.NoError(t, err)
-	ctrl := New(testOptions(t))
+	ctrl, err := New(testOptions(t))
+	require.NoError(t, err)
 	defer cleanUpController(t.Context(), ctrl)
 	err = ctrl.LoadSource(s, nil, "")
 	diagErrs, ok := err.(diag.Diagnostics)
@@ -97,7 +97,6 @@ func TestParseSources_DuplicateComponent(t *testing.T) {
 }
 
 func TestParseSources_UniqueComponent(t *testing.T) {
-	defer verifyNoGoroutineLeaks(t)
 	content := `
         logging {
 		    format = "json"
@@ -119,14 +118,14 @@ func TestParseSources_UniqueComponent(t *testing.T) {
 		"t2": []byte(content2),
 	})
 	require.NoError(t, err)
-	ctrl := New(testOptions(t))
+	ctrl, err := New(testOptions(t))
+	require.NoError(t, err)
 	defer cleanUpController(t.Context(), ctrl)
 	err = ctrl.LoadSource(s, nil, "")
 	require.NoError(t, err)
 }
 
 func TestParseSources_SyntaxErrors(t *testing.T) {
-	defer verifyNoGoroutineLeaks(t)
 	file1 := `
 		testcomponents.tick "tick1" {
 			frequency = "1s"

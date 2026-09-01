@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"time"
 
 	promconfig "github.com/prometheus/common/config"
@@ -10,10 +11,78 @@ import (
 type SyslogFormat string
 
 const (
-	// A modern Syslog RFC
+	// SyslogFormatRFC5424 is a modern Syslog RFC format.
 	SyslogFormatRFC5424 = "rfc5424"
-	// A legacy Syslog RFC also known as BSD-syslog
+	// SyslogFormatRFC3164 is a legacy Syslog RFC format, also known as BSD-syslog.
 	SyslogFormatRFC3164 = "rfc3164"
+
+	// SyslogFormatRaw is a raw format.
+	//
+	// Using this format, skips log label parsing.
+	SyslogFormatRaw = "raw"
+)
+
+// MarshalText implements encoding.TextMarshaler
+func (s SyslogFormat) MarshalText() (text []byte, err error) {
+	return []byte(s), nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler
+func (s *SyslogFormat) UnmarshalText(text []byte) error {
+	str := SyslogFormat(text)
+	switch str {
+	case "rfc5424":
+		*s = SyslogFormatRFC5424
+	case "rfc3164":
+		*s = SyslogFormatRFC3164
+	case "raw":
+		*s = SyslogFormatRaw
+	default:
+		return fmt.Errorf("unknown syslog format: %s", str)
+	}
+
+	return nil
+}
+
+func (s SyslogFormat) Validate() error {
+	switch s {
+	case SyslogFormatRFC5424,
+		SyslogFormatRFC3164,
+		SyslogFormatRaw:
+		return nil
+	}
+
+	return fmt.Errorf("unknown syslog format: %q", s)
+}
+
+// RFC3164CiscoComponents enables Cisco IOS log line parsing and configures what fields to parse.
+type RFC3164CiscoComponents struct {
+	EnableAll       bool
+	MessageCounter  bool
+	SequenceNumber  bool
+	Hostname        bool
+	SecondFractions bool
+}
+
+// RawFormatOptions are options for raw syslog format processing.
+type RawFormatOptions struct {
+	// UseNullTerminatorDelimiter sets null terminator ('\0') as a log line delimiter for non-transparent framed messages.
+	//
+	// When set to false, new line character ('\n') is used instead.
+	UseNullTerminatorDelimiter bool `yaml:"use_null_terminator_delimiter"`
+}
+
+func (opts RawFormatOptions) Delimiter() byte {
+	if opts.UseNullTerminatorDelimiter {
+		return 0
+	}
+
+	return '\n'
+}
+
+const (
+	DefaultUDPQueueSize     = 10
+	DefaultUDPHostCacheSize = 128
 )
 
 // SyslogTargetConfig describes a scrape config that listens for log lines over syslog.
@@ -48,6 +117,11 @@ type SyslogTargetConfig struct {
 	// Default is rfc5424.
 	SyslogFormat SyslogFormat `yaml:"syslog_format"`
 
+	// RawFormatOptions are options for processing syslog messages in raw mode.
+	//
+	// Takes effect only if "syslog_format" is set to "raw".
+	RawFormatOptions RawFormatOptions `yaml:"raw_format_options"`
+
 	// MaxMessageLength sets the maximum limit to the length of syslog messages
 	MaxMessageLength int `yaml:"max_message_length"`
 
@@ -56,6 +130,18 @@ type SyslogTargetConfig struct {
 	// When parsing an RFC3164 message, should the year be defaulted to the current year?
 	// When false, the year will default to 0.
 	RFC3164DefaultToCurrentYear bool `yaml:"rfc3164_default_to_current_year"`
+
+	// RFC5424AllowEmptyMsg when true, forwards RFC5424 messages with empty MSG content. Default false.
+	RFC5424AllowEmptyMsg bool `yaml:"rfc5424_allow_empty_msg"`
+
+	// RFC3164CiscoComponents enables and configures Cisco IOS syslog parsing.
+	RFC3164CiscoComponents *RFC3164CiscoComponents `yaml:"rfc3164_cisco_components"`
+
+	// UDPQueueSize determines max number of messages which may be waiting for a processor.
+	UDPQueueSize int `yaml:"udp_queue_size"`
+
+	// UDPHostCacheSize sets the capacity of the LRU cache for reverse-DNS hostname lookups.
+	UDPHostCacheSize int `yaml:"udp_host_cache_size"`
 }
 
 func (config SyslogTargetConfig) IsRFC3164Message() bool {

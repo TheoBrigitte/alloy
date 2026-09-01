@@ -6,19 +6,20 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
+	"github.com/prometheus/client_golang/prometheus"
+	promCfg "github.com/prometheus/common/config"
+
+	"github.com/grafana/alloy/internal/slogadapter"
 	"github.com/grafana/alloy/internal/static/integrations"
 	integrations_v2 "github.com/grafana/alloy/internal/static/integrations/v2"
 	"github.com/grafana/alloy/internal/static/integrations/v2/metricsutils"
-	"github.com/prometheus/client_golang/prometheus"
-	promCfg "github.com/prometheus/common/config"
 
 	"github.com/prometheus-community/elasticsearch_exporter/collector"
 	"github.com/prometheus-community/elasticsearch_exporter/pkg/clusterinfo"
@@ -88,7 +89,7 @@ func (b *BasicAuthHTTPTransport) RoundTrip(req *http.Request) (*http.Response, e
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler for Config
-func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (c *Config) UnmarshalYAML(unmarshal func(any) error) error {
 	*c = DefaultConfig
 
 	type plain Config
@@ -101,7 +102,7 @@ func (c *Config) Name() string {
 }
 
 // InstanceKey returns the hostname:port of the elasticsearch node being queried.
-func (c *Config) InstanceKey(agentKey string) (string, error) {
+func (c *Config) InstanceKey(_ string) (string, error) {
 	u, err := url.Parse(c.Address)
 	if err != nil {
 		return "", fmt.Errorf("could not parse url: %w", err)
@@ -110,8 +111,8 @@ func (c *Config) InstanceKey(agentKey string) (string, error) {
 }
 
 // NewIntegration creates a new elasticsearch_exporter
-func (c *Config) NewIntegration(logger log.Logger) (integrations.Integration, error) {
-	return New(logger, c)
+func (c *Config) NewIntegration(l *slog.Logger) (integrations.Integration, error) {
+	return New(l, c)
 }
 
 func init() {
@@ -122,7 +123,7 @@ func init() {
 // New creates a new elasticsearch_exporter
 // This function replicates the main() function of github.com/justwatchcom/elasticsearch_exporter
 // but uses yaml configuration instead of kingpin flags.
-func New(logger log.Logger, c *Config) (integrations.Integration, error) {
+func New(logger *slog.Logger, c *Config) (integrations.Integration, error) {
 	if c.Address == "" {
 		return nil, fmt.Errorf("empty elasticsearch_address provided")
 	}
@@ -167,16 +168,17 @@ func New(logger log.Logger, c *Config) (integrations.Integration, error) {
 		Transport: esHttpTransport,
 	}
 
-	clusterInfoRetriever := clusterinfo.New(logger, httpClient, esURL, c.ExportClusterInfoInterval)
+	gokitlogger := slogadapter.GoKit(logger.Handler())
+	clusterInfoRetriever := clusterinfo.New(gokitlogger, httpClient, esURL, c.ExportClusterInfoInterval)
 
 	collectors := []prometheus.Collector{
 		clusterInfoRetriever,
-		collector.NewClusterHealth(logger, httpClient, esURL),
-		collector.NewNodes(logger, httpClient, esURL, c.AllNodes, c.Node),
+		collector.NewClusterHealth(gokitlogger, httpClient, esURL),
+		collector.NewNodes(gokitlogger, httpClient, esURL, c.AllNodes, c.Node),
 	}
 
 	if c.ExportIndices || c.ExportShards {
-		iC := collector.NewIndices(logger, httpClient, esURL, c.ExportShards, c.IncludeAliases)
+		iC := collector.NewIndices(gokitlogger, httpClient, esURL, c.ExportShards, c.IncludeAliases)
 		collectors = append(collectors, iC)
 		if registerErr := clusterInfoRetriever.RegisterConsumer(iC); registerErr != nil {
 			return nil, fmt.Errorf("failed to register indices collector in cluster info: %w", err)
@@ -184,37 +186,34 @@ func New(logger log.Logger, c *Config) (integrations.Integration, error) {
 	}
 
 	if c.ExportSnapshots {
-		collectors = append(collectors, collector.NewSnapshots(logger, httpClient, esURL))
+		collectors = append(collectors, collector.NewSnapshots(gokitlogger, httpClient, esURL))
 	}
 
 	if c.ExportClusterSettings {
-		collectors = append(collectors, collector.NewClusterSettings(logger, httpClient, esURL))
+		collectors = append(collectors, collector.NewClusterSettings(gokitlogger, httpClient, esURL))
 	}
 
 	if c.ExportDataStreams {
-		collectors = append(collectors, collector.NewDataStream(logger, httpClient, esURL))
+		collectors = append(collectors, collector.NewDataStream(gokitlogger, httpClient, esURL))
 	}
 
 	if c.ExportIndicesSettings {
-		collectors = append(collectors, collector.NewIndicesSettings(logger, httpClient, esURL))
+		collectors = append(collectors, collector.NewIndicesSettings(gokitlogger, httpClient, esURL))
 	}
 
 	if c.ExportSLM {
-		collectors = append(collectors, collector.NewSLM(logger, httpClient, esURL))
+		collectors = append(collectors, collector.NewSLM(gokitlogger, httpClient, esURL))
 	}
 
 	start := func(ctx context.Context) error {
 		// start the cluster info retriever
 		switch runErr := clusterInfoRetriever.Run(ctx); runErr {
 		case nil:
-			level.Info(logger).Log(
-				"msg", "started cluster info retriever",
-				"interval", c.ExportClusterInfoInterval.String(),
-			)
+			logger.Info("started cluster info retriever", "interval", c.ExportClusterInfoInterval.String())
 		case clusterinfo.ErrInitialCallTimeout:
-			level.Info(logger).Log("msg", "initial cluster info call timed out")
+			logger.Info("initial cluster info call timed out")
 		default:
-			level.Error(logger).Log("msg", "failed to run cluster info retriever", "err", err)
+			logger.Error("failed to run cluster info retriever", "err", err)
 			return err
 		}
 

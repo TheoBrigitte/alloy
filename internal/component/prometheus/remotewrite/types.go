@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"sort"
 	"time"
 
 	types "github.com/grafana/alloy/internal/component/common/config"
@@ -13,17 +12,22 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/grafana/regexp"
+	"github.com/prometheus/client_golang/exp/api/remote"
 	common "github.com/prometheus/common/config"
 	"github.com/prometheus/common/model"
-	promsigv4 "github.com/prometheus/common/sigv4"
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/storage/remote/azuread"
+	"github.com/prometheus/prometheus/storage/remote/googleiam"
+	promsigv4 "github.com/prometheus/sigv4"
 )
 
 // Defaults for config blocks.
 var (
+	PrometheusProtobufMessageV1 = string(remote.WriteV1MessageType)
+	PrometheusProtobufMessageV2 = string(remote.WriteV2MessageType)
+
 	DefaultArguments = Arguments{
 		WALOptions: DefaultWALOptions,
 	}
@@ -52,7 +56,7 @@ var (
 		MaxKeepaliveTime:  8 * time.Hour,
 	}
 
-	errTooManyAuth = errors.New("at most one of sigv4, azuread, basic_auth, oauth2, bearer_token & bearer_token_file must be configured")
+	errTooManyAuth = errors.New("at most one of sigv4, azuread, google_iam, basic_auth, oauth2, bearer_token & bearer_token_file must be configured")
 )
 
 // Arguments represents the input state of the prometheus.remote_write
@@ -77,20 +81,26 @@ type EndpointOptions struct {
 	Headers              map[string]string       `alloy:"headers,attr,optional"`
 	SendExemplars        bool                    `alloy:"send_exemplars,attr,optional"`
 	SendNativeHistograms bool                    `alloy:"send_native_histograms,attr,optional"`
+	ProtobufMessage      string                  `alloy:"protobuf_message,attr,optional"`
 	HTTPClientConfig     *types.HTTPClientConfig `alloy:",squash"`
 	QueueOptions         *QueueOptions           `alloy:"queue_config,block,optional"`
 	MetadataOptions      *MetadataOptions        `alloy:"metadata_config,block,optional"`
 	WriteRelabelConfigs  []*alloy_relabel.Config `alloy:"write_relabel_config,block,optional"`
 	SigV4                *SigV4Config            `alloy:"sigv4,block,optional"`
 	AzureAD              *AzureADConfig          `alloy:"azuread,block,optional"`
+	GoogleIAM            *GoogleIAMConfig        `alloy:"google_iam,block,optional"`
+	RoundRobinDNS        bool                    `alloy:"round_robin_dns,attr,optional"`
 }
 
 // SetToDefault implements syntax.Defaulter.
 func (r *EndpointOptions) SetToDefault() {
+	defaultHTTPClientConfig := types.CloneDefaultHTTPClientConfig()
+	defaultHTTPClientConfig.EnableHTTP2 = false // This has changed to false when we upgraded to Prometheus v3.4.2
 	*r = EndpointOptions{
 		RemoteTimeout:    30 * time.Second,
 		SendExemplars:    true,
-		HTTPClientConfig: types.CloneDefaultHTTPClientConfig(),
+		ProtobufMessage:  PrometheusProtobufMessageV1,
+		HTTPClientConfig: defaultHTTPClientConfig,
 	}
 }
 
@@ -111,16 +121,21 @@ func (r *EndpointOptions) Validate() error {
 		}
 	}
 
+	authMethods := 0
 	if r.SigV4 != nil {
-		if r.AzureAD != nil || isAuthSetInHttpClientConfig(r.HTTPClientConfig) {
-			return errTooManyAuth
-		}
+		authMethods++
 	}
-
 	if r.AzureAD != nil {
-		if r.SigV4 != nil || isAuthSetInHttpClientConfig(r.HTTPClientConfig) {
-			return errTooManyAuth
-		}
+		authMethods++
+	}
+	if r.GoogleIAM != nil {
+		authMethods++
+	}
+	if isAuthSetInHttpClientConfig(r.HTTPClientConfig) {
+		authMethods++
+	}
+	if authMethods > 1 {
+		return errTooManyAuth
 	}
 
 	if r.WriteRelabelConfigs != nil {
@@ -129,6 +144,10 @@ func (r *EndpointOptions) Validate() error {
 				return err
 			}
 		}
+	}
+
+	if err := remote.WriteMessageType(r.ProtobufMessage).Validate(); err != nil {
+		return fmt.Errorf("invalid protobuf_message %q for endpoint %q: %w", r.ProtobufMessage, r.Name, err)
 	}
 
 	return nil
@@ -243,34 +262,24 @@ func convertConfigs(cfg Arguments) (*config.Config, error) {
 			Name:                 rw.Name,
 			SendExemplars:        rw.SendExemplars,
 			SendNativeHistograms: rw.SendNativeHistograms,
-
-			//TODO: Make this configurable when we upgrade to Prometheus v3?
-			ProtobufMessage: config.RemoteWriteProtoMsgV1,
-
-			WriteRelabelConfigs: alloy_relabel.ComponentToPromRelabelConfigs(rw.WriteRelabelConfigs),
-			HTTPClientConfig:    *rw.HTTPClientConfig.Convert(),
-			QueueConfig:         rw.QueueOptions.toPrometheusType(),
-			MetadataConfig:      rw.MetadataOptions.toPrometheusType(),
-			SigV4Config:         rw.SigV4.toPrometheusType(),
-			AzureADConfig:       rw.AzureAD.toPrometheusType(),
+			ProtobufMessage:      remote.WriteMessageType(rw.ProtobufMessage),
+			WriteRelabelConfigs:  alloy_relabel.ComponentToPromRelabelConfigs(rw.WriteRelabelConfigs),
+			HTTPClientConfig:     *rw.HTTPClientConfig.Convert(),
+			QueueConfig:          rw.QueueOptions.toPrometheusType(),
+			MetadataConfig:       rw.MetadataOptions.toPrometheusType(),
+			SigV4Config:          rw.SigV4.toPrometheusType(),
+			AzureADConfig:        rw.AzureAD.toPrometheusType(),
+			GoogleIAMConfig:      rw.GoogleIAM.toPrometheusType(),
+			RoundRobinDNS:        rw.RoundRobinDNS,
 		})
 	}
 
 	return &config.Config{
 		GlobalConfig: config.GlobalConfig{
-			ExternalLabels: toLabels(cfg.ExternalLabels),
+			ExternalLabels: labels.FromMap(cfg.ExternalLabels),
 		},
 		RemoteWriteConfigs: rwConfigs,
 	}, nil
-}
-
-func toLabels(in map[string]string) labels.Labels {
-	res := make(labels.Labels, 0, len(in))
-	for k, v := range in {
-		res = append(res, labels.Label{Name: k, Value: v})
-	}
-	sort.Sort(res)
-	return res
 }
 
 // ManagedIdentityConfig is used to store managed identity config values
@@ -307,9 +316,8 @@ func (c *OAuthConfig) toPrometheusType() *azuread.OAuthConfig {
 	}
 
 	return &azuread.OAuthConfig{
-		ClientID: c.ClientID,
-		//TODO(ptodev): Upstream a change to make this an opaque string.
-		ClientSecret: string(c.ClientSecret),
+		ClientID:     c.ClientID,
+		ClientSecret: common.Secret(c.ClientSecret),
 		TenantID:     c.TenantID,
 	}
 }
@@ -330,9 +338,42 @@ func (c *SDKConfig) toPrometheusType() *azuread.SDKConfig {
 	}
 }
 
+// WorkloadIdentityConfig is used to store azure workload identity config values.
+type WorkloadIdentityConfig struct {
+	// ClientID is the clientId of the Microsoft Entra application or user-assigned managed identity.
+	ClientID string `alloy:"client_id,attr"`
+
+	// TenantID is the tenantId of the Microsoft Entra application or user-assigned managed identity.
+	TenantID string `alloy:"tenant_id,attr"`
+
+	// TokenFilePath is the path to the projected service-account token file. Defaults to the
+	// standard Azure Workload Identity path when unset.
+	TokenFilePath string `alloy:"token_file_path,attr,optional"`
+}
+
+func (c *WorkloadIdentityConfig) toPrometheusType() *azuread.WorkloadIdentityConfig {
+	if c == nil {
+		return nil
+	}
+
+	tokenFilePath := c.TokenFilePath
+	if tokenFilePath == "" {
+		tokenFilePath = azuread.DefaultWorkloadIdentityTokenPath
+	}
+
+	return &azuread.WorkloadIdentityConfig{
+		ClientID:      c.ClientID,
+		TenantID:      c.TenantID,
+		TokenFilePath: tokenFilePath,
+	}
+}
+
 type AzureADConfig struct {
 	// ManagedIdentity is the managed identity that is being used to authenticate.
 	ManagedIdentity *ManagedIdentityConfig `alloy:"managed_identity,block,optional"`
+
+	// WorkloadIdentity is the workload identity that is being used to authenticate.
+	WorkloadIdentity *WorkloadIdentityConfig `alloy:"workload_identity,block,optional"`
 
 	// OAuth is the oauth config that is being used to authenticate.
 	OAuth *OAuthConfig `alloy:"oauth,block,optional"`
@@ -342,6 +383,9 @@ type AzureADConfig struct {
 
 	// Cloud is the Azure cloud in which the service is running. Example: AzurePublic/AzureGovernment/AzureChina.
 	Cloud string `alloy:"cloud,attr,optional"`
+
+	// Scope is the custom OAuth 2.0 scope to request when acquiring tokens.
+	Scope string `alloy:"scope,attr,optional"`
 }
 
 func (a *AzureADConfig) Validate() error {
@@ -349,20 +393,17 @@ func (a *AzureADConfig) Validate() error {
 		return fmt.Errorf("must provide a cloud in the Azure AD config")
 	}
 
-	if a.ManagedIdentity == nil && a.OAuth == nil && a.SDK == nil {
-		return fmt.Errorf("must provide an Azure Managed Identity, Azure OAuth or Azure SDK in the Azure AD config")
+	authenticators := 0
+	for _, set := range []bool{a.ManagedIdentity != nil, a.WorkloadIdentity != nil, a.OAuth != nil, a.SDK != nil} {
+		if set {
+			authenticators++
+		}
 	}
-
-	if a.ManagedIdentity != nil && a.OAuth != nil {
-		return fmt.Errorf("cannot provide both Azure Managed Identity and Azure OAuth in the Azure AD config")
+	if authenticators == 0 {
+		return fmt.Errorf("must provide an Azure Managed Identity, Azure Workload Identity, Azure OAuth or Azure SDK in the Azure AD config")
 	}
-
-	if a.ManagedIdentity != nil && a.SDK != nil {
-		return fmt.Errorf("cannot provide both Azure Managed Identity and Azure SDK in the Azure AD config")
-	}
-
-	if a.OAuth != nil && a.SDK != nil {
-		return fmt.Errorf("cannot provide both Azure OAuth and Azure SDK in the Azure AD config")
+	if authenticators > 1 {
+		return fmt.Errorf("cannot provide multiple authentication methods in the Azure AD config")
 	}
 
 	if a.ManagedIdentity != nil {
@@ -373,6 +414,21 @@ func (a *AzureADConfig) Validate() error {
 		_, err := uuid.Parse(a.ManagedIdentity.ClientID)
 		if err != nil {
 			return fmt.Errorf("the provided Azure Managed Identity client_id is invalid")
+		}
+	}
+
+	if a.WorkloadIdentity != nil {
+		if a.WorkloadIdentity.ClientID == "" {
+			return fmt.Errorf("must provide an Azure Workload Identity client_id in the Azure AD config")
+		}
+		if a.WorkloadIdentity.TenantID == "" {
+			return fmt.Errorf("must provide an Azure Workload Identity tenant_id in the Azure AD config")
+		}
+		if _, err := uuid.Parse(a.WorkloadIdentity.ClientID); err != nil {
+			return fmt.Errorf("the provided Azure Workload Identity client_id is invalid")
+		}
+		if _, err := uuid.Parse(a.WorkloadIdentity.TenantID); err != nil {
+			return fmt.Errorf("the provided Azure Workload Identity tenant_id is invalid")
 		}
 	}
 
@@ -409,6 +465,12 @@ func (a *AzureADConfig) Validate() error {
 		}
 	}
 
+	if a.Scope != "" {
+		if matched, err := regexp.MatchString(`^[\w\s:/.\-]+$`, a.Scope); err != nil || !matched {
+			return fmt.Errorf("the provided scope contains invalid characters")
+		}
+	}
+
 	return nil
 }
 
@@ -425,24 +487,32 @@ func (a *AzureADConfig) toPrometheusType() *azuread.AzureADConfig {
 	}
 
 	return &azuread.AzureADConfig{
-		ManagedIdentity: a.ManagedIdentity.toPrometheusType(),
-		OAuth:           a.OAuth.toPrometheusType(),
-		SDK:             a.SDK.toPrometheusType(),
-		Cloud:           a.Cloud,
+		ManagedIdentity:  a.ManagedIdentity.toPrometheusType(),
+		WorkloadIdentity: a.WorkloadIdentity.toPrometheusType(),
+		OAuth:            a.OAuth.toPrometheusType(),
+		SDK:              a.SDK.toPrometheusType(),
+		Cloud:            a.Cloud,
+		Scope:            a.Scope,
 	}
 }
 
 type SigV4Config struct {
-	Region    string            `alloy:"region,attr,optional"`
-	AccessKey string            `alloy:"access_key,attr,optional"`
-	SecretKey alloytypes.Secret `alloy:"secret_key,attr,optional"`
-	Profile   string            `alloy:"profile,attr,optional"`
-	RoleARN   string            `alloy:"role_arn,attr,optional"`
+	Region             string            `alloy:"region,attr,optional"`
+	AccessKey          string            `alloy:"access_key,attr,optional"`
+	SecretKey          alloytypes.Secret `alloy:"secret_key,attr,optional"`
+	Profile            string            `alloy:"profile,attr,optional"`
+	RoleARN            string            `alloy:"role_arn,attr,optional"`
+	ExternalID         string            `alloy:"external_id,attr,optional"`
+	UseFIPSSTSEndpoint bool              `alloy:"use_fips_sts_endpoint,attr,optional"`
+	ServiceName        string            `alloy:"service_name,attr,optional"`
 }
 
 func (s *SigV4Config) Validate() error {
 	if (s.AccessKey == "") != (s.SecretKey == "") {
 		return fmt.Errorf("must provide an AWS SigV4 access key and secret key if credentials are specified in the SigV4 config")
+	}
+	if s.ExternalID != "" && s.RoleARN == "" {
+		return fmt.Errorf("external_id can only be used with role_arn")
 	}
 	return nil
 }
@@ -453,10 +523,27 @@ func (s *SigV4Config) toPrometheusType() *promsigv4.SigV4Config {
 	}
 
 	return &promsigv4.SigV4Config{
-		Region:    s.Region,
-		AccessKey: s.AccessKey,
-		SecretKey: common.Secret(s.SecretKey),
-		Profile:   s.Profile,
-		RoleARN:   s.RoleARN,
+		Region:             s.Region,
+		AccessKey:          s.AccessKey,
+		SecretKey:          common.Secret(s.SecretKey),
+		Profile:            s.Profile,
+		RoleARN:            s.RoleARN,
+		ExternalID:         s.ExternalID,
+		UseFIPSSTSEndpoint: s.UseFIPSSTSEndpoint,
+		ServiceName:        s.ServiceName,
+	}
+}
+
+type GoogleIAMConfig struct {
+	CredentialsFile string `alloy:"credentials_file,attr,optional"`
+}
+
+func (g *GoogleIAMConfig) toPrometheusType() *googleiam.Config {
+	if g == nil {
+		return nil
+	}
+
+	return &googleiam.Config{
+		CredentialsFile: g.CredentialsFile,
 	}
 }

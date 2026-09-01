@@ -3,16 +3,14 @@ package stages
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"reflect"
 
-	"github.com/go-kit/log"
-	"github.com/jmespath/go-jmespath"
+	"github.com/jmespath-community/go-jmespath"
 	"github.com/oschwald/geoip2-golang"
 	"github.com/oschwald/maxminddb-golang"
 	"github.com/prometheus/common/model"
-
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 )
 
 var (
@@ -62,7 +60,7 @@ type GeoIPConfig struct {
 	CustomLookups map[string]string `alloy:"custom_lookups,attr,optional"`
 }
 
-func validateGeoIPConfig(c GeoIPConfig) (map[string]*jmespath.JMESPath, error) {
+func validateGeoIPConfig(c GeoIPConfig) (map[string]jmespath.JMESPath, error) {
 	if c.DB == "" {
 		return nil, ErrEmptyDBPathGeoIPStageConfig
 	}
@@ -84,7 +82,7 @@ func validateGeoIPConfig(c GeoIPConfig) (map[string]*jmespath.JMESPath, error) {
 		return nil, nil
 	}
 
-	expressions := map[string]*jmespath.JMESPath{}
+	expressions := map[string]jmespath.JMESPath{}
 	for key, expr := range c.CustomLookups {
 		var err error
 		jmes := expr
@@ -102,7 +100,7 @@ func validateGeoIPConfig(c GeoIPConfig) (map[string]*jmespath.JMESPath, error) {
 	return expressions, nil
 }
 
-func newGeoIPStage(logger log.Logger, config GeoIPConfig) (Stage, error) {
+func newGeoIPStage(logger *slog.Logger, config GeoIPConfig) (Stage, error) {
 	valuesExpressions, err := validateGeoIPConfig(config)
 	if err != nil {
 		return nil, err
@@ -115,17 +113,17 @@ func newGeoIPStage(logger log.Logger, config GeoIPConfig) (Stage, error) {
 
 	return &geoIPStage{
 		mmdb:              mmdb,
-		logger:            logger,
+		logger:            logger.With("stage", "geoip"),
 		cfgs:              config,
 		valuesExpressions: valuesExpressions,
 	}, nil
 }
 
 type geoIPStage struct {
-	logger            log.Logger
+	logger            *slog.Logger
 	mmdb              *maxminddb.Reader
 	cfgs              GeoIPConfig
-	valuesExpressions map[string]*jmespath.JMESPath
+	valuesExpressions map[string]jmespath.JMESPath
 }
 
 // Run implements Stage
@@ -142,36 +140,31 @@ func (g *geoIPStage) Run(in chan Entry) chan Entry {
 	return out
 }
 
-// Name implements Stage
-func (g *geoIPStage) Name() string {
-	return StageTypeGeoIP
-}
-
 // Cleanup implements Stage.
 func (*geoIPStage) Cleanup() {
 	// no-op
 }
 
-func (g *geoIPStage) process(_ model.LabelSet, extracted map[string]interface{}) {
+func (g *geoIPStage) process(_ model.LabelSet, extracted map[string]any) {
 	var ip net.IP
 	if g.cfgs.Source != nil {
 		if _, ok := extracted[*g.cfgs.Source]; !ok {
-			if Debug {
-				level.Debug(g.logger).Log("msg", "source does not exist in the set of extracted values", "source", *g.cfgs.Source)
+			if debugEnabled(g.logger) {
+				g.logger.Debug("source does not exist in the set of extracted values", "source", *g.cfgs.Source)
 			}
 			return
 		}
 
 		value, err := getString(extracted[*g.cfgs.Source])
 		if err != nil {
-			if Debug {
-				level.Debug(g.logger).Log("msg", "failed to convert source value to string", "source", *g.cfgs.Source, "err", err, "type", reflect.TypeOf(extracted[*g.cfgs.Source]))
+			if debugEnabled(g.logger) {
+				g.logger.Debug("failed to convert source value to string", "source", *g.cfgs.Source, "err", err, "type", reflect.TypeOf(extracted[*g.cfgs.Source]))
 			}
 			return
 		}
 		ip = net.ParseIP(value)
 		if ip == nil {
-			level.Error(g.logger).Log("msg", "source is not an ip", "source", value)
+			g.logger.Error("source is not an ip", "source", value)
 			return
 		}
 	}
@@ -181,7 +174,7 @@ func (g *geoIPStage) process(_ model.LabelSet, extracted map[string]interface{})
 			var record geoip2.City
 			err := g.mmdb.Lookup(ip, &record)
 			if err != nil {
-				level.Error(g.logger).Log("msg", "unable to get City record for the ip", "err", err, "ip", ip)
+				g.logger.Error("unable to get City record for the ip", "err", err, "ip", ip)
 				return
 			}
 			g.populateExtractedWithCityData(extracted, &record)
@@ -189,7 +182,7 @@ func (g *geoIPStage) process(_ model.LabelSet, extracted map[string]interface{})
 			var record geoip2.ASN
 			err := g.mmdb.Lookup(ip, &record)
 			if err != nil {
-				level.Error(g.logger).Log("msg", "unable to get ASN record for the ip", "err", err, "ip", ip)
+				g.logger.Error("unable to get ASN record for the ip", "err", err, "ip", ip)
 				return
 			}
 			g.populateExtractedWithASNData(extracted, &record)
@@ -197,12 +190,12 @@ func (g *geoIPStage) process(_ model.LabelSet, extracted map[string]interface{})
 			var record geoip2.Country
 			err := g.mmdb.Lookup(ip, &record)
 			if err != nil {
-				level.Error(g.logger).Log("msg", "unable to get Country record for the ip", "err", err, "ip", ip)
+				g.logger.Error("unable to get Country record for the ip", "err", err, "ip", ip)
 				return
 			}
 			g.populateExtractedWithCountryData(extracted, &record)
 		default:
-			level.Error(g.logger).Log("msg", "unknown database type")
+			g.logger.Error("unknown database type")
 		}
 	}
 	if g.valuesExpressions != nil {
@@ -212,11 +205,11 @@ func (g *geoIPStage) process(_ model.LabelSet, extracted map[string]interface{})
 
 func (g *geoIPStage) close() {
 	if err := g.mmdb.Close(); err != nil {
-		level.Error(g.logger).Log("msg", "error while closing mmdb", "err", err)
+		g.logger.Error("error while closing mmdb", "err", err)
 	}
 }
 
-func (g *geoIPStage) populateExtractedWithCityData(extracted map[string]interface{}, record *geoip2.City) {
+func (g *geoIPStage) populateExtractedWithCityData(extracted map[string]any, record *geoip2.City) {
 	for field, label := range fields {
 		switch field {
 		case CITYNAME:
@@ -280,7 +273,7 @@ func (g *geoIPStage) populateExtractedWithCityData(extracted map[string]interfac
 	}
 }
 
-func (g *geoIPStage) populateExtractedWithASNData(extracted map[string]interface{}, record *geoip2.ASN) {
+func (g *geoIPStage) populateExtractedWithASNData(extracted map[string]any, record *geoip2.ASN) {
 	for field, label := range fields {
 		switch field {
 		case ASN:
@@ -297,7 +290,7 @@ func (g *geoIPStage) populateExtractedWithASNData(extracted map[string]interface
 	}
 }
 
-func (g *geoIPStage) populateExtractedWithCountryData(extracted map[string]interface{}, record *geoip2.Country) {
+func (g *geoIPStage) populateExtractedWithCountryData(extracted map[string]any, record *geoip2.Country) {
 	for field, label := range fields {
 		switch field {
 		case COUNTRYNAME:
@@ -324,22 +317,22 @@ func (g *geoIPStage) populateExtractedWithCountryData(extracted map[string]inter
 	}
 }
 
-func (g *geoIPStage) populateExtractedWithCustomFields(ip net.IP, extracted map[string]interface{}) {
+func (g *geoIPStage) populateExtractedWithCustomFields(ip net.IP, extracted map[string]any) {
 	var record any
 	if err := g.mmdb.Lookup(ip, &record); err != nil {
-		level.Error(g.logger).Log("msg", "unable to lookup record for the ip", "err", err, "ip", ip)
+		g.logger.Error("unable to lookup record for the ip", "err", err, "ip", ip)
 		return
 	}
 
 	for key, expr := range g.valuesExpressions {
 		r, err := expr.Search(record)
 		if err != nil {
-			level.Error(g.logger).Log("msg", "failed to search JMES expression", "err", err)
+			g.logger.Error("failed to search JMES expression", "err", err)
 			continue
 		}
 		if r == nil {
-			if Debug {
-				level.Debug(g.logger).Log("msg", "failed find a result with JMES expression", "key", key)
+			if debugEnabled(g.logger) {
+				g.logger.Debug("failed find a result with JMES expression", "key", key)
 			}
 			continue
 		}

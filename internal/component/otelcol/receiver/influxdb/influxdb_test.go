@@ -3,13 +3,13 @@ package influxdb_test
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
 	"github.com/grafana/alloy/internal/component/otelcol"
 	"github.com/grafana/alloy/internal/component/otelcol/internal/fakeconsumer"
 	"github.com/grafana/alloy/internal/component/otelcol/receiver/influxdb"
+	alloycomponenttest "github.com/grafana/alloy/internal/runtime/componenttest"
 	"github.com/grafana/alloy/syntax"
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
 	influxdb1 "github.com/influxdata/influxdb1-client/v2"
@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/confighttp"
+	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/receiver/receivertest"
@@ -36,13 +37,6 @@ func (m *mockConsumer) ConsumeMetrics(_ context.Context, md pmetric.Metrics) err
 	m.lastMetricsConsumed = pmetric.NewMetrics()
 	md.CopyTo(m.lastMetricsConsumed)
 	return nil
-}
-
-// Helper function to create a free address for testing
-func getFreeAddr(t *testing.T) string {
-	t.Helper()
-	port := 8086 // Use a suitable port for testing
-	return fmt.Sprintf("localhost:%d", port)
 }
 
 // provided channel.
@@ -98,10 +92,13 @@ func TestInfluxdbUnmarshal(t *testing.T) {
 
 // TestWriteLineProtocol_Alloy tests the InfluxDB receiver's ability to process metrics
 func TestWriteLineProtocol_Alloy(t *testing.T) {
-	addr := getFreeAddr(t)
+	addr := alloycomponenttest.GetFreeAddr(t)
 	config := &influxdbreceiver.Config{
 		ServerConfig: confighttp.ServerConfig{
-			Endpoint: addr,
+			NetAddr: confignet.AddrConfig{
+				Endpoint:  addr,
+				Transport: confignet.TransportTypeTCP,
+			},
 		},
 	}
 	nextConsumer := new(mockConsumer)
@@ -160,7 +157,7 @@ func TestWriteLineProtocol_Alloy(t *testing.T) {
 	})
 }
 func TestReceiverStart(t *testing.T) {
-	addr := getFreeAddr(t)
+	addr := alloycomponenttest.GetFreeAddr(t)
 	metricCh := make(chan pmetric.Metrics)
 	config := influxdb.Arguments{
 		HTTPServer: otelcol.HTTPServerArguments{
@@ -187,7 +184,7 @@ func TestReceiverStart(t *testing.T) {
 	require.NoError(t, nil, "Receiver failed to start")
 }
 func TestReceiverProcessesMetrics(t *testing.T) {
-	addr := getFreeAddr(t)
+	addr := alloycomponenttest.GetFreeAddr(t)
 	nextConsumer := &mockConsumer{}
 
 	config := influxdb.Arguments{

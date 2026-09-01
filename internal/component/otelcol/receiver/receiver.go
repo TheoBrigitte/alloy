@@ -5,20 +5,7 @@ package receiver
 import (
 	"context"
 	"errors"
-	"os"
 
-	"github.com/grafana/alloy/internal/build"
-	"github.com/grafana/alloy/internal/component"
-	"github.com/grafana/alloy/internal/component/otelcol"
-	otelcolCfg "github.com/grafana/alloy/internal/component/otelcol/config"
-	"github.com/grafana/alloy/internal/component/otelcol/internal/fanoutconsumer"
-	"github.com/grafana/alloy/internal/component/otelcol/internal/interceptconsumer"
-	"github.com/grafana/alloy/internal/component/otelcol/internal/lazycollector"
-	"github.com/grafana/alloy/internal/component/otelcol/internal/livedebuggingpublisher"
-	"github.com/grafana/alloy/internal/component/otelcol/internal/scheduler"
-	"github.com/grafana/alloy/internal/component/otelcol/internal/views"
-	"github.com/grafana/alloy/internal/service/livedebugging"
-	"github.com/grafana/alloy/internal/util/zapadapter"
 	"github.com/prometheus/client_golang/prometheus"
 	otelcomponent "go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/pdata/plog"
@@ -28,6 +15,19 @@ import (
 	otelreceiver "go.opentelemetry.io/collector/receiver"
 	sdkprometheus "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/sdk/metric"
+
+	"github.com/grafana/alloy/internal/component"
+	"github.com/grafana/alloy/internal/component/otelcol"
+	otelcolCfg "github.com/grafana/alloy/internal/component/otelcol/config"
+	"github.com/grafana/alloy/internal/component/otelcol/internal/fanoutconsumer"
+	"github.com/grafana/alloy/internal/component/otelcol/internal/interceptconsumer"
+	"github.com/grafana/alloy/internal/component/otelcol/internal/lazycollector"
+	"github.com/grafana/alloy/internal/component/otelcol/internal/livedebuggingpublisher"
+	"github.com/grafana/alloy/internal/component/otelcol/internal/scheduler"
+	"github.com/grafana/alloy/internal/component/otelcol/internal/views"
+	otelcolutil "github.com/grafana/alloy/internal/component/otelcol/util"
+	"github.com/grafana/alloy/internal/service/livedebugging"
+	"github.com/grafana/alloy/internal/slogadapter"
 )
 
 // Arguments is an extension of component.Arguments which contains necessary
@@ -127,7 +127,6 @@ func (r *Receiver) Run(ctx context.Context) error {
 func (r *Receiver) Update(args component.Arguments) error {
 	r.args = args.(Arguments)
 	host := scheduler.NewHost(
-		r.opts.Logger,
 		scheduler.WithHostExtensions(r.args.Extensions()),
 		scheduler.WithHostExporters(r.args.Exporters()),
 	)
@@ -150,18 +149,19 @@ func (r *Receiver) Update(args component.Arguments) error {
 	settings := otelreceiver.Settings{
 		ID: otelcomponent.NewIDWithName(r.factory.Type(), r.opts.ID),
 		TelemetrySettings: otelcomponent.TelemetrySettings{
-			Logger: zapadapter.New(r.opts.Logger),
-
+			Logger:         slogadapter.NewZap(r.opts.Logger),
 			TracerProvider: r.opts.Tracer,
 			MeterProvider:  mp,
 		},
 
-		BuildInfo: otelcomponent.BuildInfo{
-			Command:     os.Args[0],
-			Description: "Grafana Alloy",
-			Version:     build.Version,
-		},
+		BuildInfo: otelcolutil.GetBuildInfo(),
 	}
+
+	resource, err := otelcolutil.GetTelemetrySettingsResource()
+	if err != nil {
+		return err
+	}
+	settings.TelemetrySettings.Resource = resource
 
 	receiverConfig, err := r.args.Convert()
 	if err != nil {

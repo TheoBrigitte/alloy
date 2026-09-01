@@ -7,6 +7,7 @@ import (
 	"github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/collector"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/googlecloudexporter"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
 
 	"github.com/grafana/alloy/internal/component/otelcol/exporter/googlecloud"
@@ -58,11 +59,7 @@ func TestConfigConversion(t *testing.T) {
 				TimeoutSettings: exporterhelper.TimeoutConfig{
 					Timeout: 12 * time.Second,
 				},
-				QueueSettings: exporterhelper.QueueConfig{
-					Enabled:      true,
-					NumConsumers: 10,
-					QueueSize:    1000,
-				},
+				QueueSettings: configoptional.Some(exporterhelper.NewDefaultQueueConfig()),
 			},
 		},
 		{
@@ -125,8 +122,6 @@ func TestConfigConversion(t *testing.T) {
 
 				sending_queue {
 					enabled = false
-					num_consumers = 57
-					queue_size = 567
 				}
 			`,
 			expected: googlecloudexporter.Config{
@@ -191,11 +186,7 @@ func TestConfigConversion(t *testing.T) {
 				TimeoutSettings: exporterhelper.TimeoutConfig{
 					Timeout: 12 * time.Second,
 				},
-				QueueSettings: exporterhelper.QueueConfig{
-					Enabled:      false,
-					NumConsumers: 57,
-					QueueSize:    567,
-				},
+				QueueSettings: configoptional.None[exporterhelper.QueueBatchConfig](),
 			},
 		},
 	}
@@ -208,9 +199,9 @@ func TestConfigConversion(t *testing.T) {
 			require.NoError(t, err)
 			actualCfg := actual.(*googlecloudexporter.Config)
 			// testify cannot test for function field equality, so set them to nil to correctly compare other fields
-			actualCfg.MetricConfig.GetMetricName = nil
-			actualCfg.MetricConfig.MapMonitoredResource = nil
-			actualCfg.LogConfig.MapMonitoredResource = nil
+			actualCfg.Config.MetricConfig.GetMetricName = nil
+			actualCfg.Config.MetricConfig.MapMonitoredResource = nil
+			actualCfg.Config.LogConfig.MapMonitoredResource = nil
 			require.Equal(t, &tc.expected, actualCfg)
 		})
 	}

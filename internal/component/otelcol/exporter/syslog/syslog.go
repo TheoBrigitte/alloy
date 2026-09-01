@@ -64,7 +64,6 @@ func (args *Arguments) SetToDefault() {
 	}
 
 	args.Queue.SetToDefault()
-	args.Queue.Enabled = false // Upstream has this disabled by default
 	args.Retry.SetToDefault()
 	args.DebugMetrics.SetToDefault()
 }
@@ -79,13 +78,13 @@ func (args Arguments) Convert() (otelcomponent.Config, error) {
 		TimeoutSettings: otelpexporterhelper.TimeoutConfig{
 			Timeout: args.Timeout,
 		},
-		QueueSettings:       *q,
+		QueueSettings:       q,
 		BackOffConfig:       *args.Retry.Convert(),
 		Endpoint:            args.Endpoint,
 		Port:                args.Port,
 		Network:             args.Network,
 		Protocol:            string(args.Protocol),
-		TLSSetting:          *args.TLS.Convert(),
+		TLS:                 *args.TLS.Convert(),
 		EnableOctetCounting: args.EnableOctetCounting,
 	}, nil
 }

@@ -18,6 +18,7 @@ type Config struct {
 	MaxAttempts           int                      `alloy:"max_attempts,attr,optional"`
 	MaxBackoff            time.Duration            `alloy:"max_backoff,attr,optional"`
 	FailOnMissingMetadata bool                     `alloy:"fail_on_missing_metadata,attr,optional"`
+	TagsFromIMDS          bool                     `alloy:"tags_from_imds,attr,optional"`
 }
 
 // DefaultArguments holds default settings for Config.
@@ -44,13 +45,14 @@ func (args *Config) SetToDefault() {
 	*args = DefaultArguments
 }
 
-func (args Config) Convert() map[string]interface{} {
-	return map[string]interface{}{
+func (args Config) Convert() map[string]any {
+	return map[string]any{
 		"tags":                     append([]string{}, args.Tags...),
 		"resource_attributes":      args.ResourceAttributes.Convert(),
 		"max_attempts":             args.MaxAttempts,
 		"max_backoff":              args.MaxBackoff,
 		"fail_on_missing_metadata": args.FailOnMissingMetadata,
+		"tags_from_imds":           args.TagsFromIMDS,
 	}
 }
 
@@ -67,8 +69,8 @@ type ResourceAttributesConfig struct {
 	HostType              rac.ResourceAttributeConfig `alloy:"host.type,block,optional"`
 }
 
-func (r ResourceAttributesConfig) Convert() map[string]interface{} {
-	return map[string]interface{}{
+func (r ResourceAttributesConfig) Convert() map[string]any {
+	return map[string]any{
 		"cloud.account.id":        r.CloudAccountID.Convert(),
 		"cloud.availability_zone": r.CloudAvailabilityZone.Convert(),
 		"cloud.platform":          r.CloudPlatform.Convert(),

@@ -6,10 +6,11 @@ import (
 	"net"
 	"testing"
 
-	util_log "github.com/grafana/loki/v3/pkg/util/log"
 	"github.com/oschwald/geoip2-golang"
 	"github.com/oschwald/maxminddb-golang"
 	"github.com/stretchr/testify/require"
+
+	"github.com/grafana/alloy/internal/runtime/logging"
 )
 
 var (
@@ -131,12 +132,12 @@ func Test_MaxmindAsn(t *testing.T) {
 	}
 	testStage := &geoIPStage{
 		mmdb:              mmdb,
-		logger:            util_log.Logger,
+		logger:            logging.NewSlogNop(),
 		valuesExpressions: valuesExpressions,
 		cfgs:              config,
 	}
 
-	extracted := map[string]interface{}{}
+	extracted := map[string]any{}
 	testStage.populateExtractedWithASNData(extracted, &record)
 
 	for _, field := range []string{
@@ -175,12 +176,12 @@ func Test_MaxmindCity(t *testing.T) {
 	}
 	testStage := &geoIPStage{
 		mmdb:              mmdb,
-		logger:            util_log.Logger,
+		logger:            logging.NewSlogNop(),
 		valuesExpressions: valuesExpressions,
 		cfgs:              config,
 	}
 
-	extracted := map[string]interface{}{}
+	extracted := map[string]any{}
 	testStage.populateExtractedWithCityData(extracted, &record)
 
 	for _, field := range []string{
@@ -229,12 +230,12 @@ func Test_MaxmindCountry(t *testing.T) {
 	}
 	testStage := &geoIPStage{
 		mmdb:              mmdb,
-		logger:            util_log.Logger,
+		logger:            logging.NewSlogNop(),
 		valuesExpressions: valuesExpressions,
 		cfgs:              config,
 	}
 
-	extracted := map[string]interface{}{}
+	extracted := map[string]any{}
 	testStage.populateExtractedWithCountryData(extracted, &record)
 
 	for _, field := range []string{

@@ -5,17 +5,21 @@ aliases:
 description: Learn about prometheus.exporter.unix
 labels:
   stage: general-availability
+  products:
+    - oss
 title: prometheus.exporter.unix
 ---
 
 # `prometheus.exporter.unix`
 
-The `prometheus.exporter.unix` component uses the [`node_exporter`](https://github.com/prometheus/node_exporter) to expose a wide variety of hardware and OS metrics for \*nix-based systems.
+The `prometheus.exporter.unix` component uses the [`node_exporter`](https://github.com/prometheus/node_exporter) to expose a wide variety of hardware and OS metrics for Unix-based systems.
 
 The `node_exporter` itself is comprised of various _collectors_, which you can enable and disable.
 For more information on collectors, refer to the [`collectors-list`](#collectors-list) section.
 
 You can specify multiple `prometheus.exporter.unix` components by giving them different labels.
+
+{{< docs/shared lookup="reference/components/exporter-clustering-warning.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
 ## Usage
 
@@ -28,16 +32,16 @@ prometheus.exporter.unix "<LABEL>" {
 
 You can use the following arguments with `prometheus.exporter.unix`:
 
-| Name                       | Type           | Description                                                                 | Default          | Required |
-| -------------------------- | -------------- | --------------------------------------------------------------------------- | ---------------- | -------- |
-| `disable_collectors`       | `list(string)` | Collectors to disable.                                             |  `[]`            | no       |
-| `enable_collectors`        | `list(string)` | Collectors to enable.                                              |  `[]`            | no       |
-| `include_exporter_metrics` | `boolean`      | Whether metrics about the exporter itself should be reported.               | false            | no       |
-| `procfs_path`              | `string`       | The procfs mount point.                                                     | `/proc`          | no       |
-| `rootfs_path`              | `string`       | Specify a prefix for accessing the host filesystem.                         | `/`              | no       |
-| `set_collectors`           | `list(string)` | Overrides the default set of enabled collectors with the collectors listed. |                  | no       |
-| `sysfs_path`               | `string`       | The sysfs mount point.                                                      | `/sys`           | no       |
-| `udev_data_path`           | `string`       | The udev data path.                                                         | `/run/udev/data` | no       |
+| Name                       | Type           | Description                                                                 | Default            | Required |
+| -------------------------- | -------------- | --------------------------------------------------------------------------- | ------------------ | -------- |
+| `disable_collectors`       | `list(string)` | Collectors to disable.                                                      | `[]`               | no       |
+| `enable_collectors`        | `list(string)` | Collectors to enable.                                                       | `[]`               | no       |
+| `include_exporter_metrics` | `bool`         | Whether metrics about the exporter itself should be reported.               | `false`            | no       |
+| `procfs_path`              | `string`       | The procfs mount point.                                                     | `"/proc"`          | no       |
+| `rootfs_path`              | `string`       | Specify a prefix for accessing the host filesystem.                         | `"/"`              | no       |
+| `set_collectors`           | `list(string)` | Overrides the default set of enabled collectors with the collectors listed. |                    | no       |
+| `sysfs_path`               | `string`       | The sysfs mount point.                                                      | `"/sys"`           | no       |
+| `udev_data_path`           | `string`       | The udev data path.                                                         | `"/run/udev/data"` | no       |
 
 `set_collectors` defines a hand-picked list of enabled-by-default collectors.
 If set, anything not provided in that list is disabled by default.
@@ -52,8 +56,11 @@ If there are conflicts, it takes precedence over `enable_collectors`.
 
 You can use the following blocks with `prometheus.exporter.unix`:
 
+{{< docs/alloy-config >}}
+
 | Name                         | Description                             | Required |
 | ---------------------------- | --------------------------------------- | -------- |
+| [`arp`][arp]                 | Configures the `arp` collector.         | no       |
 | [`bcache`][bcache]           | Configures the `bcache` collector.      | no       |
 | [`cpu`][cpu]                 | Configures the `cpu` collector.         | no       |
 | [`disk`][disk]               | Configures the `diskstats` collector.   | no       |
@@ -75,6 +82,7 @@ You can use the following blocks with `prometheus.exporter.unix`:
 | [`textfile`][textfile]       | Configures the `textfile` collector.    | no       |
 | [`vmstat`][vmstat]           | Configures the `vmstat` collector.      | no       |
 
+[arp]: #arp
 [bcache]: #bcache
 [cpu]: #cpu
 [disk]: #disk
@@ -96,6 +104,18 @@ You can use the following blocks with `prometheus.exporter.unix`:
 [textfile]: #textfile
 [vmstat]: #vmstat
 
+{{< /docs/alloy-config >}}
+
+### `arp`
+
+| Name             | Type      | Description                                                                                             | Default | Required |
+| ---------------- | --------- | --------------------------------------------------------------------------------------------------------| ------- | -------- |
+| `device_exclude` | `string`  | Regular expression of devices to exclude for `arp` collector. Mutually exclusive with `device_include`. |         | no       |
+| `device_include` | `string`  | Regular expression of devices to include for `arp` collector. Mutually exclusive with `device_exclude`. |         | no       |
+| `netlink`        | `boolean` | Use netlink to gather ARP stats instead of `/proc/net/arp`.                                             | `false` | no       |
+
+It is recommended to set `netlink` to `true` on systems with InfiniBand or other non-Ethernet devices.
+
 ### `bcache`
 
 | Name             | Type      | Description                                           | Default | Required |
@@ -113,8 +133,8 @@ You can use the following blocks with `prometheus.exporter.unix`:
 
 ### `disk`
 
-| Name             | Type     | Description                                                                                  | Default                                                        | Required |
-| ---------------- | -------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | -------- |
+| Name             | Type     | Description                                                                                    | Default                                                        | Required |
+| ---------------- | -------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | -------- |
 | `device_exclude` | `string` | Regular expression of devices to exclude for `diskstats`.                                      | `"^(ram\|loop\|fd\|(h\|s\|v\|xv)d[a-z]\|nvme\\d+n\\d+p)\\d+$"` | no       |
 | `device_include` | `string` | Regular expression of devices to include for `diskstats`. If set, `device_exclude` is ignored. |                                                                | no       |
 
@@ -189,14 +209,14 @@ The default values vary by the operating system {{< param "PRODUCT_NAME" >}} run
 
 | Name                          | Type      | Description                                                           | Default | Required |
 | ----------------------------- | --------- | --------------------------------------------------------------------- | ------- | -------- |
-| `ignore_invalid_speed_device` | `boolean` | Ignore net devices with invalid speed values.                         | false   | no       |
+| `ignore_invalid_speed_device` | `boolean` | Ignore net devices with invalid speed values.                         | `false` | no       |
 | `ignored_devices`             | `string`  | Regular expression of net devices to ignore for `netclass` collector. | `"^$"`  | no       |
 
 ### `netdev`
 
 | Name             | Type      | Description                                                                             | Default | Required |
 | ---------------- | --------- | --------------------------------------------------------------------------------------- | ------- | -------- |
-| `address_info`   | `boolean` | Enable collecting address-info for every device.                                        | false   | no       |
+| `address_info`   | `boolean` | Enable collecting address-info for every device.                                        | `false` | no       |
 | `device_exclude` | `string`  | Regular expression of net devices to exclude. Mutually exclusive with `device_include`. |         | no       |
 | `device_include` | `string`  | Regular expression of net devices to include. Mutually exclusive with `device_exclude`. |         | no       |
 
@@ -268,9 +288,9 @@ An explicit value in the block takes precedence over the environment variable.
 
 | Name              | Type      | Description                                                                                                          | Default                                           | Required |
 | ----------------- | --------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | -------- |
-| `enable_restarts` | `boolean` | Enables service unit metric `service_restart_total`                                                                  | false                                             | no       |
-| `start_time`      | `boolean` | Enables service unit metric `unit_start_time_seconds`                                                                | false                                             | no       |
-| `task_metrics`    | `boolean` | Enables service unit task metrics `unit_tasks_current` and `unit_tasks_max.`                                         | false                                             | no       |
+| `enable_restarts` | `boolean` | Enables service unit metric `service_restart_total`                                                                  | `false`                                           | no       |
+| `start_time`      | `boolean` | Enables service unit metric `unit_start_time_seconds`                                                                | `false`                                           | no       |
+| `task_metrics`    | `boolean` | Enables service unit task metrics `unit_tasks_current` and `unit_tasks_max.`                                         | `false`                                           | no       |
 | `unit_exclude`    | `string`  | Regular expression of systemd units to exclude. Units must both match include and not match exclude to be collected. | `".+\\.(automount\|device\|mount\|scope\|slice)"` | no       |
 | `unit_include`    | `string`  | Regular expression of systemd units to include. Units must both match include and not match exclude to be collected. | `".+"`                                            | no       |
 
@@ -319,7 +339,7 @@ You can choose to enable a subset of collectors to limit the amount of metrics e
 
 | Name               | Description                                                                                                                                                                     | OS                                                                 | Enabled by default |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ------------------ |
-| `arp`              | Exposes ARP statistics from `/proc/net/arp`.                                                                                                                                    | Linux                                                              | yes                |
+| `arp`              | Exposes ARP statistics from `/proc/net/arp` or via netlink.                                                     | Linux                                                              | yes                |
 | `bcache`           | Exposes bcache statistics from `/sys/fs/bcache`.                                                                                                                                | Linux                                                              | yes                |
 | `bonding`          | Exposes the number of configured and active slaves of Linux bonding interfaces.                                                                                                 | Linux                                                              | yes                |
 | `boottime`         | Exposes system boot time derived from the `kern.boottime sysctl`.                                                                                                               | Darwin, Dragonfly, FreeBSD, NetBSD, OpenBSD, Oracle Solaris        | yes                |
@@ -417,7 +437,7 @@ prometheus.remote_write "demo" {
 
     basic_auth {
       username = "<USERNAME>"
-      password = "<PASSWORD">
+      password = "<PASSWORD>"
     }
   }
 }

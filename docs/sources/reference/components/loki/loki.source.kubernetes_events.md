@@ -5,6 +5,8 @@ aliases:
 description: Learn about loki.source.kubernetes_events
 labels:
   stage: general-availability
+  products:
+    - oss
 title: loki.source.kubernetes_events
 ---
 
@@ -64,23 +66,26 @@ For compatibility with the `eventhandler` integration from static mode, `job_nam
 
 You can use the following blocks with `loki.source.kubernetes_events`:
 
+{{< docs/alloy-config >}}
+
 | Block                                            | Description                                                | Required |
 | ------------------------------------------------ | ---------------------------------------------------------- | -------- |
-| [`client`][client]                               | Configures Kubernetes client used to tail logs.            | no       |
+| [`client`][client]                               | Configures Kubernetes client used to tail events.          | no       |
 | `client` > [`authorization`][authorization]      | Configure generic authorization to the endpoint.           | no       |
 | `client` > [`basic_auth`][basic_auth]            | Configure `basic_auth` for authenticating to the endpoint. | no       |
 | `client` > [`oauth2`][oauth2]                    | Configure OAuth 2.0 for authenticating to the endpoint.    | no       |
 | `client` > `oauth2` > [`tls_config`][tls_config] | Configure TLS settings for connecting to the endpoint.     | no       |
-| `client` > [`tls_config`][]                      | Configure TLS settings for connecting to the endpoint.     | no       |
-
-The > symbol indicates deeper levels of nesting.
-For example, `client` > `basic_auth` refers to a `basic_auth` block defined inside a `client` block.
+| `client` > [`tls_config`][tls_config]            | Configure TLS settings for connecting to the endpoint.     | no       |
+| [`clustering`][clustering]                       | Configure the component for when {{< param "PRODUCT_NAME" >}} is running in clustered mode. | no       |
 
 [authorization]: #authorization
 [basic_auth]: #basic_auth
 [client]: #client
+[clustering]: #clustering
 [oauth2]: #oauth2
 [tls_config]: #tls_config
+
+{{< /docs/alloy-config >}}
 
 ### `client`
 
@@ -96,7 +101,7 @@ The following arguments are supported:
 | `bearer_token`           | `secret`            | Bearer token to authenticate with.                                                               |         | no       |
 | `enable_http2`           | `bool`              | Whether HTTP2 is supported for requests.                                                         | `true`  | no       |
 | `follow_redirects`       | `bool`              | Whether redirects returned by the server should be followed.                                     | `true`  | no       |
-| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |                      | no       |
+| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |         | no       |
 | `kubeconfig_file`        | `string`            | Path of the `kubeconfig` file to use for connecting to Kubernetes.                               |         | no       |
 | `no_proxy`               | `string`            | Comma-separated list of IP addresses, CIDR notations, and domain names to exclude from proxying. |         | no       |
 | `proxy_connect_header`   | `map(list(secret))` | Specifies headers to send to proxies during CONNECT requests.                                    |         | no       |
@@ -105,11 +110,11 @@ The following arguments are supported:
 
  At most, one of the following can be provided:
 
-* [`authorization`][authorization] block
-* [`basic_auth`][basic_auth] block
-* [`bearer_token_file`][client] argument
-* [`bearer_token`][client] argument
-* [`oauth2`][oauth2] block
+* [`authorization`](#authorization) block
+* [`basic_auth`](#basic_auth) block
+* [`bearer_token_file`](#client) argument
+* [`bearer_token`](#client) argument
+* [`oauth2`](#oauth2) block
 
 {{< docs/shared lookup="reference/components/http-client-proxy-config-description.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
@@ -128,6 +133,29 @@ The following arguments are supported:
 ### `tls_config`
 
 {{< docs/shared lookup="reference/components/tls-config-block.md" source="alloy" version="<ALLOY_VERSION>" >}}
+
+### `clustering`
+
+| Name      | Type   | Description                                               | Default | Required |
+| --------- | ------ | --------------------------------------------------------- | ------- | -------- |
+| `enabled` | `bool` | Distribute event collection with other cluster nodes.     |         | yes      |
+
+When {{< param "PRODUCT_NAME" >}} is [using clustering][], and `enabled` is set to true, then this `loki.source.kubernetes_events` component instance opts-in to participating in the cluster to distribute the load of event collection between all cluster nodes.
+
+If {{< param "PRODUCT_NAME" >}} is _not_ running in clustered mode, then the block is a no-op and `loki.source.kubernetes_events` collects events from every configured namespace.
+
+When clustering is enabled, each namespace is distributed across cluster nodes using consistent hashing.
+If the `namespaces` argument is empty (watching all namespaces), only a single node in the cluster will collect events, since all replicas share the same "all namespaces" target.
+If specific namespaces are listed, they are distributed across the available cluster nodes.
+
+{{< admonition type="caution" >}}
+When a namespace moves from one cluster node to another (for example, during a rollout or pod restart), the new node may re-deliver events that were already sent by the previous node.
+This is because each node tracks its read position locally, and the new node starts from the beginning of the available events.
+The impact is bounded by the Kubernetes event TTL, which defaults to one hour.
+See [issue #3717](https://github.com/grafana/alloy/issues/3717) for more details.
+{{< /admonition >}}
+
+[using clustering]: ../../../../get-started/clustering/
 
 ## Exported fields
 

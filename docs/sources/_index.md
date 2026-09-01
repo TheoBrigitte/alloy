@@ -4,13 +4,16 @@ title: Grafana Alloy
 description: Grafana Alloy is a vendor-neutral distribution of the OTel Collector
 weight: 350
 cascade:
-  ALLOY_RELEASE: v1.9.0
-  OTEL_VERSION: v0.122.0
-  PROM_WIN_EXP_VERSION: v0.27.3
-  SNMP_VERSION: v0.28.0
-  BEYLA_VERSION: v2.1
+  ALLOY_RELEASE: v1.19.0 # x-release-please-version
+  OTEL_VERSION: v0.158.0
+  PROM_WIN_EXP_VERSION: v0.31.3
+  SNMP_VERSION: v0.29.0
+  BEYLA_VERSION: v3.28.0
   FULL_PRODUCT_NAME: Grafana Alloy
   PRODUCT_NAME: Alloy
+  FULL_OTEL_ENGINE: Alloy OpenTelemetry Engine
+  OTEL_ENGINE: OTel Engine
+  DEFAULT_ENGINE: Default Engine
 hero:
   title: Grafana Alloy
   level: 1
@@ -18,7 +21,7 @@ hero:
   width: 110
   height: 110
   description: >-
-    Grafana Alloy combines the strengths of the leading collectors into one place. Whether observing applications, infrastructure, or both, Grafana Alloy can collect, process, and export telemetry signals to scale and future-proof your observability approach. 
+    Grafana Alloy combines the strengths of the leading collectors into one place. Whether observing applications, infrastructure, or both, Grafana Alloy can collect, process, and export telemetry signals to scale and future-proof your observability approach.
 cards:
   title_class: pt-0 lh-1
   items:
@@ -62,7 +65,7 @@ Choosing the right tools to collect, process, and export telemetry data can be a
 The broad range of telemetry you need to process and the collectors you choose can vary widely depending on your observability goals.
 In addition, you face the challenge of addressing the constantly evolving needs of your observability strategy.
 For example, you may initially only need application observability, but you then discover that you must add infrastructure observability.
-Many organizations manage and configure multiple collectors to address these challenges, introducing more complexity and potential errors in their obervability strategy.
+Many organizations manage and configure multiple collectors to address these challenges, introducing more complexity and potential errors in their observability strategy.
 
 **All signals, whether application, infrastructure, or both**
 

@@ -7,17 +7,16 @@ import (
 	"sync"
 
 	"github.com/IBM/sarama"
+	"github.com/grafana/dskit/flagext"
+	"github.com/prometheus/common/model"
+
 	"github.com/grafana/alloy/internal/component"
 	"github.com/grafana/alloy/internal/component/common/loki"
 	alloy_relabel "github.com/grafana/alloy/internal/component/common/relabel"
 	"github.com/grafana/alloy/internal/component/loki/source/azure_event_hubs/internal/parser"
 	kt "github.com/grafana/alloy/internal/component/loki/source/internal/kafkatarget"
 	"github.com/grafana/alloy/internal/featuregate"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 	"github.com/grafana/alloy/syntax/alloytypes"
-	"github.com/grafana/dskit/flagext"
-
-	"github.com/prometheus/common/model"
 )
 
 func init() {
@@ -77,10 +76,9 @@ func (a *Arguments) Validate() error {
 // New creates a new loki.source.azure_event_hubs component.
 func New(o component.Options, args Arguments) (*Component, error) {
 	c := &Component{
-		mut:     sync.RWMutex{},
 		opts:    o,
 		handler: loki.NewLogsReceiver(),
-		fanout:  args.ForwardTo,
+		fanout:  loki.NewFanout(args.ForwardTo),
 	}
 
 	// Call to Update() to start readers and set receivers once at the start.
@@ -93,37 +91,32 @@ func New(o component.Options, args Arguments) (*Component, error) {
 
 // Component implements the loki.source.azure_event_hubs component.
 type Component struct {
-	opts    component.Options
-	mut     sync.RWMutex
-	fanout  []loki.LogsReceiver
+	opts component.Options
+
+	fanout  *loki.Fanout
 	handler loki.LogsReceiver
-	target  *kt.TargetSyncer
+
+	mut    sync.Mutex
+	target *kt.TargetSyncer
 }
 
 // Run implements component.Component.
 func (c *Component) Run(ctx context.Context) error {
 	defer func() {
-		level.Info(c.opts.Logger).Log("msg", "loki.source.azure_event_hubs component shutting down, stopping the targets")
-		c.mut.RLock()
-		err := c.target.Stop()
-		if err != nil {
-			level.Error(c.opts.Logger).Log("msg", "error while stopping azure_event_hubs target", "err", err)
-		}
-		c.mut.RUnlock()
+		c.opts.Logger.Info("loki.source.azure_event_hubs component shutting down, stopping the targets")
+
+		loki.Drain(c.handler, c.fanout, loki.DefaultDrainTimeout, func() {
+			c.mut.Lock()
+			defer c.mut.Unlock()
+
+			if err := c.target.Stop(); err != nil {
+				c.opts.Logger.Error("error while stopping azure_event_hubs target", "err", err)
+			}
+		})
 	}()
 
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case entry := <-c.handler.Chan():
-			c.mut.RLock()
-			for _, receiver := range c.fanout {
-				receiver.Chan() <- entry
-			}
-			c.mut.RUnlock()
-		}
-	}
+	loki.Consume(ctx, c.handler, c.fanout)
+	return nil
 }
 
 const (
@@ -137,7 +130,7 @@ func (c *Component) Update(args component.Arguments) error {
 	defer c.mut.Unlock()
 
 	newArgs := args.(Arguments)
-	c.fanout = newArgs.ForwardTo
+	c.fanout.UpdateChildren(newArgs.ForwardTo)
 
 	cfg, err := newArgs.Convert()
 	if err != nil {

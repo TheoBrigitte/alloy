@@ -3,26 +3,32 @@ canonical: https://grafana.com/docs/alloy/latest/reference/components/otelcol/ot
 aliases:
   - ../otelcol.processor.filter/ # /docs/alloy/latest/reference/otelcol.processor.filter/
 description: Learn about otelcol.processor.filter
+labels:
+  stage: general-availability
+  products:
+    - oss
 title: otelcol.processor.filter
 ---
 
-# otelcol.processor.filter
+# `otelcol.processor.filter`
 
-`otelcol.processor.filter` filters out accepted telemetry data from other `otelcol`
-components using the [OpenTelemetry Transformation Language (OTTL)][OTTL].
+`otelcol.processor.filter` filters out accepted telemetry data from other `otelcol` components using the [OpenTelemetry Transformation Language (OTTL)][OTTL].
 If any of the OTTL statements evaluates to **true**, the telemetry data is **dropped**.
 
 OTTL statements consist of [OTTL Converter functions][], which act on paths.
 A path is a reference to a telemetry data such as:
+
 * Resource attributes.
 * Instrumentation scope name.
 * Span attributes.
 
 In addition to the [standard OTTL Converter functions][OTTL Converter functions], the following metrics-only functions are used exclusively by the processor:
+
 * [HasAttrKeyOnDataPoint][]
 * [HasAttrOnDataPoint][]
 
 [OTTL][] statements used in `otelcol.processor.filter` mostly contain constructs such as:
+
 * [Booleans][OTTL booleans]:
   * `not true`
   * `not IsMatch(name, "http_.*")`
@@ -37,8 +43,10 @@ For example, the OTTL statement `attributes["grpc"] == true` is written in {{< p
 {{< /admonition >}}
 
 {{< admonition type="note" >}}
-`otelcol.processor.filter` is a wrapper over the upstream OpenTelemetry Collector `filter` processor.
+`otelcol.processor.filter` is a wrapper over the upstream OpenTelemetry Collector [`filter`][] processor.
 If necessary, bug reports or feature requests will be redirected to the upstream repository.
+
+[`filter`]: https://github.com/open-telemetry/opentelemetry-collector/tree/{{< param "OTEL_VERSION" >}}/filter
 {{< /admonition >}}
 
 You can specify multiple `otelcol.processor.filter` components by giving them different labels.
@@ -46,19 +54,29 @@ You can specify multiple `otelcol.processor.filter` components by giving them di
 {{< admonition type="warning" >}}
 Exercise caution when using `otelcol.processor.filter`:
 
-- Make sure you understand schema/format of the incoming data and test the configuration thoroughly.
-  In general, use a configuration that is as specific as possible ensure you retain only the data you want to keep.
-- [Orphaned Telemetry][]: The processor allows dropping spans. Dropping a span may lead to
-  orphaned spans if the dropped span is a parent. Dropping a span may lead to orphaned logs
-  if the log references the dropped span.
+* Make sure you understand schema/format of the incoming data and test the configuration thoroughly.
+  In general, use a configuration that's as specific as possible ensure you retain only the data you want to keep.
+* [Orphaned Telemetry][]: The processor allows dropping spans.
+  Dropping a span may lead to orphaned spans if the dropped span is a parent.
+  Dropping a span may lead to orphaned logs if the log references the dropped span.
 
 [Orphaned Telemetry]: https://github.com/open-telemetry/opentelemetry-collector/blob/v0.85.0/docs/standard-warnings.md#orphaned-telemetry
+{{< /admonition >}}
+
+{{< admonition type="note" >}}
+Span-level only. `otelcol.processor.filter` evaluates each span (or log/metric) independently.
+It doesn't keep or drop an entire trace based on a child span matching a URL or attribute, and it doesn't rewrite the root span's name or service after filtering siblings.
+
+For whole-trace keep/drop decisions, use [`otelcol.processor.tail_sampling`][otelcol.processor.tail_sampling].
+Tail sampling makes a trace decision from buffered data, and `decision_wait` controls how long it waits after the first span before deciding.
+
+[otelcol.processor.tail_sampling]: ../otelcol.processor.tail_sampling/
 {{< /admonition >}}
 
 ## Usage
 
 ```alloy
-otelcol.processor.filter "LABEL" {
+otelcol.processor.filter "<LABEL>" {
   output {
     metrics = [...]
     logs    = [...]
@@ -69,129 +87,212 @@ otelcol.processor.filter "LABEL" {
 
 ## Arguments
 
-`otelcol.processor.filter` supports the following arguments:
+You can use the following argument with `otelcol.processor.filter`:
 
-Name         | Type     | Description                                                        | Default       | Required
------------- | -------- | ------------------------------------------------------------------ | ------------- | --------
-`error_mode` | `string` | How to react to errors if they occur while processing a statement. | `"propagate"` | no
+| Name         | Type     | Description                                                        | Default       | Required |
+|--------------|----------|--------------------------------------------------------------------|---------------|----------|
+| `error_mode` | `string` | How to react to errors if they occur while processing a statement. | `"ignore"`    | no       |
 
 The supported values for `error_mode` are:
+
 * `ignore`: Ignore errors returned by conditions, log them, and continue on to the next condition. This is the recommended mode.
-* `silent`: Ignore errors returned by conditions, do not log them, and continue on to the next condition.
+* `silent`: Ignore errors returned by conditions, don't log them, and continue on to the next condition.
 * `propagate`: Return the error up the pipeline. This will result in the payload being dropped from {{< param "PRODUCT_NAME" >}}.
 
 ## Blocks
 
-The following blocks are supported inside the definition of
-`otelcol.processor.filter`:
+You can use the following blocks with `otelcol.processor.filter`:
 
-Hierarchy | Block       | Description                                       | Required
---------- | ----------- | ------------------------------------------------- | --------
-traces    | [traces][]  | Statements which filter traces.                   | no
-metrics   | [metrics][] | Statements which filter metrics.                  | no
-logs      | [logs][]    | Statements which filter logs.                     | no
-output    | [output][]  | Configures where to send received telemetry data. | yes
-debug_metrics | [debug_metrics][] | Configures the metrics that this component generates to monitor its state. | no
+{{< docs/alloy-config >}}
 
-[traces]: #traces-block
-[metrics]: #metrics-block
-[logs]: #logs-block
-[output]: #output-block
-[debug_metrics]: #debug_metrics-block
+| Block                            | Description                                                                | Required |
+|----------------------------------|----------------------------------------------------------------------------|----------|
+| [`output`][output]               | Configures where to send received telemetry data.                          | yes      |
+| [`debug_metrics`][debug_metrics] | Configures the metrics that this component generates to monitor its state. | no       |
+| [`log_conditions`][log_conditions]       | Inferred-context conditions for logs.                                                              | no |
+| [`logs`][logs]                           | Deprecated. Statements which filter logs. Use [`log_conditions`][log_conditions] instead.          | no |
+| [`metric_conditions`][metric_conditions] | Inferred-context conditions for metrics.                                                           | no |
+| [`metrics`][metrics]                     | Deprecated. Statements which filter metrics. Use [`metric_conditions`][metric_conditions] instead. | no |
+| [`trace_conditions`][trace_conditions]   | Inferred-context conditions for traces.                                                            | no |
+| [`traces`][traces]                       | Deprecated. Statements which filter traces. Use [`trace_conditions`][trace_conditions] instead.    | no |
 
+[traces]: #traces
+[metrics]: #metrics
+[logs]: #logs
+[trace_conditions]: #trace_conditions
+[metric_conditions]: #metric_conditions
+[log_conditions]: #log_conditions
+[output]: #output
+[debug_metrics]: #debug_metrics
 
-### traces block
+{{< /docs/alloy-config >}}
 
-The `traces` block specifies statements that filter trace telemetry signals.
-Only one `traces` block can be specified.
+### `output`
 
-Name        | Type           | Description                                         | Default | Required
------------ | -------------- | --------------------------------------------------- | ------- | --------
-`span`      | `list(string)` | List of OTTL statements filtering OTLP spans.       |         | no
-`spanevent` | `list(string)` | List of OTTL statements filtering OTLP span events. |         | no
+{{< badge text="Required" >}}
 
-The syntax of OTTL statements depends on the OTTL context. See the OpenTelemetry documentation for more information:
-* [OTTL span context][]
-* [OTTL spanevent context][]
+{{< docs/shared lookup="reference/components/output-block.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
-Statements are checked in order from "high level" to "low level" telemetry, in this order:
-1. `span`
-2. `spanevent`
+### `debug_metrics`
 
-If at least one `span` condition is satisfied, the `spanevent` conditions will not be checked.
-Only one of the statements inside the list of statements has to be satisfied.
+{{< docs/shared lookup="reference/components/otelcol-debug-metrics-block.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
-If all span events for a span are dropped, the span will be left intact.
+### `logs`
 
-### metrics block
+{{< admonition type="note" >}}
+The `logs` block is deprecated. Use [`log_conditions`][log_conditions] instead.
 
-The `metrics` block specifies statements that filter metric telemetry signals.
-Only one `metrics` blocks can be specified.
-
-Name        | Type           | Description                                               | Default | Required
------------ | -------------- | --------------------------------------------------------- | ------- | --------
-`metric`    | `list(string)` | List of OTTL statements filtering OTLP metric.            |         | no
-`datapoint` | `list(string)` | List of OTTL statements filtering OTLP metric datapoints. |         | no
-
-The syntax of OTTL statements depends on the OTTL context. See the OpenTelemetry documentation for more information:
-* [OTTL metric context][]
-* [OTTL datapoint context][]
-
-Statements are checked in order from "high level" to "low level" telemetry, in this order:
-1. `metric`
-2. `datapoint`
-
-If at least one `metric` condition is satisfied, the `datapoint` conditions will not be checked.
-Only one of the statements inside the list of statements has to be satisfied.
-
-If all datapoints for a metric are dropped, the metric will also be dropped.
-
-### logs block
+[log_conditions]: #log_conditions
+{{< /admonition >}}
 
 The `logs` block specifies statements that filter log telemetry signals.
 Only `logs` blocks can be specified.
 
-Name            | Type           | Description                                    | Default | Required
---------------- | -------------- | ---------------------------------------------- | ------- | --------
-`log_record`    | `list(string)` | List of OTTL statements filtering OTLP metric. |         | no
+| Name         | Type           | Description                                    | Default | Required |
+|--------------|----------------|------------------------------------------------|---------|----------|
+| `log_record` | `list(string)` | List of OTTL statements filtering OTLP metric. |         | no       |
 
-The syntax of OTTL statements depends on the OTTL context. See the OpenTelemetry documentation for more information:
+The syntax of OTTL statements depends on the OTTL context. Refer to the OpenTelemetry documentation for more information:
+
 * [OTTL log context][]
 
 Only one of the statements inside the list of statements has to be satisfied.
 
-### output block
+### `metrics`
 
-{{< docs/shared lookup="reference/components/output-block.md" source="alloy" version="<ALLOY_VERSION>" >}}
+{{< admonition type="note" >}}
+The `metrics` block is deprecated. Use [`metric_conditions`][metric_conditions] instead.
 
-### debug_metrics block
+[metric_conditions]: #metric_conditions
+{{< /admonition >}}
 
-{{< docs/shared lookup="reference/components/otelcol-debug-metrics-block.md" source="alloy" version="<ALLOY_VERSION>" >}}
+The `metrics` block specifies statements that filter metric telemetry signals.
+Only one `metrics` blocks can be specified.
+
+| Name        | Type           | Description                                               | Default | Required |
+|-------------|----------------|-----------------------------------------------------------|---------|----------|
+| `datapoint` | `list(string)` | List of OTTL statements filtering OTLP metric datapoints. |         | no       |
+| `metric`    | `list(string)` | List of OTTL statements filtering OTLP metric.            |         | no       |
+
+The syntax of OTTL statements depends on the OTTL context. Refer to the OpenTelemetry documentation for more information:
+
+* [OTTL metric context][]
+* [OTTL datapoint context][]
+
+Statements are checked in order from "high level" to "low level" telemetry, in this order:
+
+1. `metric`
+1. `datapoint`
+
+If at least one `metric` condition is satisfied, the `datapoint` conditions won't be checked.
+Only one of the statements inside the list of statements has to be satisfied.
+
+If all datapoints for a metric are dropped, the metric will also be dropped.
+
+### `traces`
+
+{{< admonition type="note" >}}
+The `traces` block is deprecated. Use [`trace_conditions`][trace_conditions] instead.
+
+[trace_conditions]: #trace_conditions
+{{< /admonition >}}
+
+The `traces` block specifies statements that filter trace telemetry signals.
+Only one `traces` block can be specified.
+
+| Name        | Type           | Description                                         | Default | Required |
+|-------------|----------------|-----------------------------------------------------|---------|----------|
+| `span`      | `list(string)` | List of OTTL statements filtering OTLP spans.       |         | no       |
+| `spanevent` | `list(string)` | List of OTTL statements filtering OTLP span events. |         | no       |
+
+The syntax of OTTL statements depends on the OTTL context. See the OpenTelemetry documentation for more information:
+
+* [OTTL span context][]
+* [OTTL spanevent context][]
+
+Statements are checked in order from "high level" to "low level" telemetry, in this order:
+
+1. `span`
+1. `spanevent`
+
+If at least one `span` condition is satisfied, the `spanevent` conditions won't be checked.
+Only one of the statements inside the list of statements has to be satisfied.
+
+If all span events for a span are dropped, the span will be left intact.
+
+### `trace_conditions`
+
+The `trace_conditions` block specifies inferred-context OTTL conditions for traces.
+
+| Name         | Type           | Description                             | Default | Required |
+| ------------ | -------------- | --------------------------------------- | ------- | -------- |
+| `conditions` | `list(string)` | List of OTTL conditions.                |         | yes      |
+| `context`    | `string`       | OTTL context for evaluating conditions. |         | no       |
+
+Supported `context` values are:
+
+* `resource`
+* `span`
+* `spanevent`
+
+For more details on available contexts, refer to [filterprocessor context documentation][Filterprocessor context].
+
+### `metric_conditions`
+
+The `metric_conditions` block specifies inferred-context OTTL conditions for metrics.
+
+| Name         | Type           | Description                             | Default | Required |
+| ------------ | -------------- | --------------------------------------- | ------- | -------- |
+| `conditions` | `list(string)` | List of OTTL conditions.                |         | yes      |
+| `context`    | `string`       | OTTL context for evaluating conditions. |         | no       |
+
+Supported `context` values are:
+
+* `resource`
+* `metric`
+* `datapoint`
+
+For more details on available contexts, refer to [filterprocessor context documentation][Filterprocessor context].
+
+### `log_conditions`
+
+The `log_conditions` block specifies inferred-context OTTL conditions for logs.
+
+| Name         | Type           | Description                             | Default | Required |
+| ------------ | -------------- | --------------------------------------- | ------- | -------- |
+| `conditions` | `list(string)` | List of OTTL conditions.                |         | yes      |
+| `context`    | `string`       | OTTL context for evaluating conditions. |         | no       |
+
+Supported `context` values are:
+
+* `resource`
+* `log`
+
+For more details on available contexts, refer to [filterprocessor context documentation][Filterprocessor context].
+
+`trace_conditions`, `metric_conditions`, and `log_conditions` can't be used together with `traces`, `metrics`, and `logs` blocks in the same component.
 
 ## Exported fields
 
 The following fields are exported and can be referenced by other components:
 
-Name    | Type               | Description
---------|--------------------|-----------------------------------------------------------------
-`input` | `otelcol.Consumer` | A value that other components can use to send telemetry data to.
+| Name    | Type               | Description                                                      |
+|---------|--------------------|------------------------------------------------------------------|
+| `input` | `otelcol.Consumer` | A value that other components can use to send telemetry data to. |
 
-`input` accepts `otelcol.Consumer` data for any telemetry signal (metrics,
-logs, or traces).
+`input` accepts `otelcol.Consumer` data for any telemetry signal (metrics, logs, or traces).
 
 ## Component health
 
-`otelcol.processor.filter` is only reported as unhealthy if given an invalid
-configuration.
+`otelcol.processor.filter` is only reported as unhealthy if given an invalid configuration.
 
 ## Debug information
 
-`otelcol.processor.filter` does not expose any component-specific debug
-information.
+`otelcol.processor.filter` doesn't expose any component-specific debug information.
 
 ## Debug metrics
 
-`otelcol.processor.filter` does not expose any component-specific debug metrics.
+`otelcol.processor.filter` doesn't expose any component-specific debug metrics.
 
 ## Examples
 
@@ -210,9 +311,9 @@ otelcol.processor.filter "default" {
   }
 
   output {
-    metrics = [otelcol.exporter.otlp.default.input]
-    logs    = [otelcol.exporter.otlp.default.input]
-    traces  = [otelcol.exporter.otlp.default.input]
+    metrics = [otelcol.exporter.otlphttp.default.input]
+    logs    = [otelcol.exporter.otlphttp.default.input]
+    traces  = [otelcol.exporter.otlphttp.default.input]
   }
 }
 ```
@@ -220,7 +321,8 @@ otelcol.processor.filter "default" {
 ### Drop metrics based on either of two criteria
 
 This example drops metrics which satisfy at least one of two OTTL statements:
-* The metric name is `my.metric` and there is a `my_label` resource attribute with a value of `abc123 `.
+
+* The metric name is `my.metric` and there is a `my_label` resource attribute with a value of `abc123`.
 * The metric is a histogram.
 
 ```alloy
@@ -235,9 +337,9 @@ otelcol.processor.filter "default" {
   }
 
   output {
-    metrics = [otelcol.exporter.otlp.default.input]
-    logs    = [otelcol.exporter.otlp.default.input]
-    traces  = [otelcol.exporter.otlp.default.input]
+    metrics = [otelcol.exporter.otlphttp.default.input]
+    logs    = [otelcol.exporter.otlphttp.default.input]
+    traces  = [otelcol.exporter.otlphttp.default.input]
   }
 }
 ```
@@ -262,15 +364,12 @@ otelcol.processor.filter "default" {
   }
 
   output {
-    metrics = [otelcol.exporter.otlp.default.input]
-    logs    = [otelcol.exporter.otlp.default.input]
-    traces  = [otelcol.exporter.otlp.default.input]
+    metrics = [otelcol.exporter.otlphttp.default.input]
+    logs    = [otelcol.exporter.otlphttp.default.input]
+    traces  = [otelcol.exporter.otlphttp.default.input]
   }
 }
 ```
-
-[escaped]: ../../../../get-started/configuration-syntax/expressions/types_and_values/#strings
-
 
 [OTTL]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/<OTEL_VERSION>/pkg/ottl/README.md
 [OTTL span context]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/<OTEL_VERSION>/pkg/ottl/contexts/ottlspan/README.md
@@ -283,6 +382,8 @@ otelcol.processor.filter "default" {
 [HasAttrOnDataPoint]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/<OTEL_VERSION>/processor/filterprocessor/README.md#hasattrondatapoint
 [OTTL booleans]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/<OTEL_VERSION>/pkg/ottl#booleans
 [OTTL math expressions]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/<OTEL_VERSION>/pkg/ottl#math-expressions
+[Filterprocessor context]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/<OTEL_VERSION>/processor/filterprocessor#context
+
 <!-- START GENERATED COMPATIBLE COMPONENTS -->
 
 ## Compatible components

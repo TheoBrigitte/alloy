@@ -5,16 +5,16 @@ import (
 	"sync"
 
 	"github.com/IBM/sarama"
+	"github.com/grafana/dskit/flagext"
+	"github.com/prometheus/common/model"
+
 	"github.com/grafana/alloy/internal/component"
 	"github.com/grafana/alloy/internal/component/common/config"
 	"github.com/grafana/alloy/internal/component/common/loki"
 	alloy_relabel "github.com/grafana/alloy/internal/component/common/relabel"
 	kt "github.com/grafana/alloy/internal/component/loki/source/internal/kafkatarget"
 	"github.com/grafana/alloy/internal/featuregate"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 	"github.com/grafana/alloy/syntax/alloytypes"
-	"github.com/grafana/dskit/flagext"
-	"github.com/prometheus/common/model"
 )
 
 func init() {
@@ -91,21 +91,19 @@ func (a *Arguments) SetToDefault() {
 type Component struct {
 	opts component.Options
 
-	mut    sync.RWMutex
-	fanout []loki.LogsReceiver
-	target *kt.TargetSyncer
-
 	handler loki.LogsReceiver
+	fanout  *loki.Fanout
+
+	mut    sync.Mutex
+	target *kt.TargetSyncer
 }
 
 // New creates a new loki.source.kafka component.
 func New(o component.Options, args Arguments) (*Component, error) {
 	c := &Component{
 		opts:    o,
-		mut:     sync.RWMutex{},
-		fanout:  args.ForwardTo,
-		target:  nil,
 		handler: loki.NewLogsReceiver(),
+		fanout:  loki.NewFanout(args.ForwardTo),
 	}
 
 	// Call to Update() to start readers and set receivers once at the start.
@@ -119,30 +117,21 @@ func New(o component.Options, args Arguments) (*Component, error) {
 // Run implements component.Component.
 func (c *Component) Run(ctx context.Context) error {
 	defer func() {
-		c.mut.Lock()
-		defer c.mut.Unlock()
+		loki.Drain(c.handler, c.fanout, loki.DefaultDrainTimeout, func() {
+			c.mut.Lock()
+			defer c.mut.Unlock()
 
-		level.Info(c.opts.Logger).Log("msg", "loki.source.kafka component shutting down, stopping target")
-		if c.target != nil {
-			err := c.target.Stop()
-			if err != nil {
-				level.Error(c.opts.Logger).Log("msg", "error while stopping kafka target", "err", err)
+			c.opts.Logger.Info("loki.source.kafka component shutting down, stopping target")
+			if c.target != nil {
+				if err := c.target.Stop(); err != nil {
+					c.opts.Logger.Error("error while stopping kafka target", "err", err)
+				}
 			}
-		}
+		})
 	}()
 
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case entry := <-c.handler.Chan():
-			c.mut.RLock()
-			for _, receiver := range c.fanout {
-				receiver.Chan() <- entry
-			}
-			c.mut.RUnlock()
-		}
-	}
+	loki.Consume(ctx, c.handler, c.fanout)
+	return nil
 }
 
 // Update implements component.Component.
@@ -151,19 +140,19 @@ func (c *Component) Update(args component.Arguments) error {
 	defer c.mut.Unlock()
 
 	newArgs := args.(Arguments)
-	c.fanout = newArgs.ForwardTo
+	c.fanout.UpdateChildren(newArgs.ForwardTo)
 
 	if c.target != nil {
 		err := c.target.Stop()
 		if err != nil {
-			level.Error(c.opts.Logger).Log("msg", "error while stopping kafka target", "err", err)
+			c.opts.Logger.Error("error while stopping kafka target", "err", err)
 		}
 	}
 
 	entryHandler := loki.NewEntryHandler(c.handler.Chan(), func() {})
 	t, err := kt.NewSyncer(c.opts.Logger, newArgs.Convert(), entryHandler, &kt.KafkaTargetMessageParser{})
 	if err != nil {
-		level.Error(c.opts.Logger).Log("msg", "failed to create kafka client with provided config", "err", err)
+		c.opts.Logger.Error("failed to create kafka client with provided config", "err", err)
 		return err
 	}
 

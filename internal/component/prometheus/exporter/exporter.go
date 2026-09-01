@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
 	"path"
 	"strings"
 	"sync"
@@ -13,13 +12,12 @@ import (
 
 	"github.com/grafana/alloy/internal/component"
 	"github.com/grafana/alloy/internal/component/discovery"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 	http_service "github.com/grafana/alloy/internal/service/http"
 	"github.com/grafana/alloy/internal/static/integrations"
 )
 
 // Creator is a function provided by an implementation to create a concrete exporter instance.
-type Creator func(component.Options, component.Arguments, string) (integrations.Integration, string, error)
+type Creator func(component.Options, component.Arguments) (integrations.Integration, string, error)
 
 // Exports are simply a list of targets for a scraper to consume.
 type Exports struct {
@@ -77,7 +75,7 @@ func (c *Component) Run(ctx context.Context) error {
 			c.mut.Unlock()
 			go func() {
 				if err := exporter.Run(newCtx); err != nil && err != context.Canceled {
-					level.Error(c.opts.Logger).Log("msg", "error running exporter", "err", err)
+					c.opts.Logger.Error("error running exporter", "err", err)
 				}
 			}()
 		}
@@ -86,17 +84,18 @@ func (c *Component) Run(ctx context.Context) error {
 
 // Update implements component.Component.
 func (c *Component) Update(args component.Arguments) error {
-	exporter, instanceKey, err := c.creator(c.opts, args, defaultInstance())
+	exporter, instanceKey, err := c.creator(c.opts, args)
 	if err != nil {
 		return err
 	}
 	c.mut.Lock()
 	c.exporter = exporter
-	if instanceKey != "" {
-		tb := discovery.NewTargetBuilderFrom(c.baseTarget)
-		tb.Set("instance", instanceKey)
-		c.baseTarget = tb.Target()
+	if instanceKey == "" { // exporters should return non-empty instanceKey, but in case of a bug default to 'unknown'.
+		instanceKey = "unknown"
 	}
+	tb := discovery.NewTargetBuilderFrom(c.baseTarget)
+	tb.Set("instance", instanceKey)
+	c.baseTarget = tb.Target()
 
 	var targets []discovery.Target
 	if c.targetBuilderFunc == nil {
@@ -132,8 +131,6 @@ func newExporter(creator Creator, name string, targetBuilderFunc func(discovery.
 			targetBuilderFunc: targetBuilderFunc,
 		}
 		jobName := fmt.Sprintf("integrations/%s", name)
-		instance := defaultInstance()
-
 		data, err := opts.GetServiceData(http_service.ServiceName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get HTTP information: %w", err)
@@ -149,7 +146,6 @@ func newExporter(creator Creator, name string, targetBuilderFunc func(discovery.
 			model.AddressLabel:      httpData.MemoryListenAddr,
 			model.SchemeLabel:       "http",
 			model.MetricsPathLabel:  path.Join(httpData.HTTPPathForComponent(opts.ID), "metrics"),
-			"instance":              instance,
 			"job":                   jobName,
 			"__meta_component_name": componentName,
 			"__meta_component_id":   opts.ID,
@@ -167,26 +163,10 @@ func newExporter(creator Creator, name string, targetBuilderFunc func(discovery.
 func (c *Component) getHttpHandler(integration integrations.Integration) http.Handler {
 	h, err := integration.MetricsHandler()
 	if err != nil {
-		level.Error(c.opts.Logger).Log("msg", "failed to creating metrics handler", "err", err)
+		c.opts.Logger.Error("failed to creating metrics handler", "err", err)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
 		})
 	}
 	return h
-}
-
-// defaultInstance retrieves the hostname identifying the machine the process is
-// running on. It will return the value of $HOSTNAME, if defined, and fall
-// back to Go's os.Hostname. If that fails, it will return "unknown".
-func defaultInstance() string {
-	hostname := os.Getenv("HOSTNAME")
-	if hostname != "" {
-		return hostname
-	}
-
-	hostname, err := os.Hostname()
-	if err != nil {
-		return "unknown"
-	}
-	return hostname
 }

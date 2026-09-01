@@ -4,18 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
 
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
 	"github.com/prometheus/common/model"
 	"go.opentelemetry.io/collector/client"
 	otelconsumer "go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
-	semconv "go.opentelemetry.io/collector/semconv/v1.5.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.5.0"
 
 	"github.com/grafana/alloy/internal/component/discovery"
 )
@@ -72,7 +71,7 @@ type Consumer struct {
 	optsMut sync.RWMutex
 	opts    Options
 
-	logger log.Logger
+	logger *slog.Logger
 }
 
 // Options configure a Consumer
@@ -85,7 +84,7 @@ type Options struct {
 
 var _ otelconsumer.Traces = (*Consumer)(nil)
 
-func NewConsumer(opts Options, logger log.Logger) (*Consumer, error) {
+func NewConsumer(opts Options, logger *slog.Logger) (*Consumer, error) {
 	c := &Consumer{
 		logger: logger,
 	}
@@ -151,13 +150,13 @@ func (c *Consumer) processAttributes(ctx context.Context, attrs pcommon.Map) {
 	ip := c.getPodIP(ctx, attrs)
 	// have to have an ip for labels lookup
 	if ip == "" {
-		level.Debug(c.logger).Log("msg", "unable to find ip in span attributes, skipping attribute addition")
+		c.logger.Debug("unable to find ip in span attributes, skipping attribute addition")
 		return
 	}
 
 	labels, ok := c.opts.HostLabels[ip]
 	if !ok {
-		level.Debug(c.logger).Log("msg", "unable to find labels", "ip", ip)
+		c.logger.Debug("unable to find labels", "ip", ip)
 		return
 	}
 
@@ -187,7 +186,7 @@ func (c *Consumer) getPodIP(ctx context.Context, attrs pcommon.Map) string {
 				return ip
 			}
 		case PodAssociationHostnameLabel:
-			hostname := stringAttributeFromMap(attrs, semconv.AttributeHostName)
+			hostname := stringAttributeFromMap(attrs, string(semconv.HostNameKey))
 			if net.ParseIP(hostname) != nil {
 				return hostname
 			}
@@ -222,7 +221,7 @@ func (c *Consumer) getConnectionIP(ctx context.Context) string {
 		splitHost, _, err := net.SplitHostPort(host)
 		if err != nil {
 			// It's normal for this to fail for IPv6 address strings that don't actually include a port.
-			level.Debug(c.logger).Log("msg", "unable to split connection host and port", "host", host, "err", err)
+			c.logger.Debug("unable to split connection host and port", "host", host, "err", err)
 		} else {
 			host = splitHost
 		}

@@ -5,12 +5,16 @@ aliases:
 description: Learn about prometheus.exporter.self
 labels:
   stage: general-availability
+  products:
+    - oss
 title: prometheus.exporter.self
 ---
 
 # `prometheus.exporter.self`
 
 The `prometheus.exporter.self` component collects and exposes metrics about {{< param "PRODUCT_NAME" >}} itself.
+
+{{< docs/shared lookup="reference/components/exporter-clustering-warning.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
 ## Usage
 
@@ -21,7 +25,7 @@ prometheus.exporter.self "<LABEL>" {
 
 ## Arguments
 
-The `prometheus.exporter.self` doesn't support any arguments.
+The `prometheus.exporter.self` component doesn't support any arguments.
 
 ## Blocks
 

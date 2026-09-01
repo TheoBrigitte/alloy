@@ -18,22 +18,45 @@ type MetricSample struct {
 	Labels    labels.Labels
 }
 
+type HistogramSample struct {
+	Timestamp      int64
+	Labels         labels.Labels
+	Histogram      *histogram.Histogram
+	FloatHistogram *histogram.FloatHistogram
+}
+
 // CollectingAppender is an Appender that collects the samples it receives in a map. Useful for testing and verifying
 // the samples that are being written.
 type CollectingAppender interface {
 	storage.Appender
 	CollectedSamples() map[string]*MetricSample
+	CollectedMetadata() map[string]metadata.Metadata
+	CollectedHistograms() map[string]*HistogramSample
+	// CollectedSTZeroSamples returns the synthetic zero samples injected via
+	// AppendSTZeroSample, keyed by label set. They are kept separate from
+	// CollectedSamples so the injected zero is observable even though it shares
+	// its label set with the real sample that follows it.
+	CollectedSTZeroSamples() map[string]*MetricSample
+	CollectedSTZeroHistograms() map[string]*HistogramSample
 	LatestSampleFor(labels string) *MetricSample
 }
 
 type collectingAppender struct {
-	mut           sync.Mutex
-	latestSamples map[string]*MetricSample
+	mut              sync.Mutex
+	latestSamples    map[string]*MetricSample
+	stZeroSamples    map[string]*MetricSample
+	metadata         map[string]metadata.Metadata
+	histograms       map[string]*HistogramSample
+	stZeroHistograms map[string]*HistogramSample
 }
 
 func NewCollectingAppender() CollectingAppender {
 	return &collectingAppender{
-		latestSamples: map[string]*MetricSample{},
+		latestSamples:    map[string]*MetricSample{},
+		stZeroSamples:    map[string]*MetricSample{},
+		metadata:         map[string]metadata.Metadata{},
+		histograms:       map[string]*HistogramSample{},
+		stZeroHistograms: map[string]*HistogramSample{},
 	}
 }
 
@@ -42,6 +65,38 @@ func (c *collectingAppender) CollectedSamples() map[string]*MetricSample {
 	defer c.mut.Unlock()
 	cp := map[string]*MetricSample{}
 	maps.Copy(cp, c.latestSamples)
+	return cp
+}
+
+func (c *collectingAppender) CollectedMetadata() map[string]metadata.Metadata {
+	c.mut.Lock()
+	defer c.mut.Unlock()
+	cp := map[string]metadata.Metadata{}
+	maps.Copy(cp, c.metadata)
+	return cp
+}
+
+func (c *collectingAppender) CollectedHistograms() map[string]*HistogramSample {
+	c.mut.Lock()
+	defer c.mut.Unlock()
+	cp := map[string]*HistogramSample{}
+	maps.Copy(cp, c.histograms)
+	return cp
+}
+
+func (c *collectingAppender) CollectedSTZeroSamples() map[string]*MetricSample {
+	c.mut.Lock()
+	defer c.mut.Unlock()
+	cp := map[string]*MetricSample{}
+	maps.Copy(cp, c.stZeroSamples)
+	return cp
+}
+
+func (c *collectingAppender) CollectedSTZeroHistograms() map[string]*HistogramSample {
+	c.mut.Lock()
+	defer c.mut.Unlock()
+	cp := map[string]*HistogramSample{}
+	maps.Copy(cp, c.stZeroHistograms)
 	return cp
 }
 
@@ -75,19 +130,52 @@ func (c *collectingAppender) AppendExemplar(ref storage.SeriesRef, l labels.Labe
 }
 
 func (c *collectingAppender) AppendHistogram(ref storage.SeriesRef, l labels.Labels, t int64, h *histogram.Histogram, fh *histogram.FloatHistogram) (storage.SeriesRef, error) {
-	panic("not implemented yet")
+	c.mut.Lock()
+	defer c.mut.Unlock()
+	c.histograms[l.String()] = &HistogramSample{
+		Timestamp:      t,
+		Labels:         l,
+		Histogram:      h,
+		FloatHistogram: fh,
+	}
+	return ref, nil
 }
 
 func (c *collectingAppender) UpdateMetadata(ref storage.SeriesRef, l labels.Labels, m metadata.Metadata) (storage.SeriesRef, error) {
-	panic("not implemented yet")
+	c.mut.Lock()
+	defer c.mut.Unlock()
+	c.metadata[l.String()] = m
+	return ref, nil
 }
 
-func (c *collectingAppender) AppendCTZeroSample(ref storage.SeriesRef, l labels.Labels, t, ct int64) (storage.SeriesRef, error) {
-	panic("not implemented yet for this test appender")
+func (c *collectingAppender) AppendSTZeroSample(ref storage.SeriesRef, l labels.Labels, t, st int64) (storage.SeriesRef, error) {
+	c.mut.Lock()
+	defer c.mut.Unlock()
+	// The synthetic zero sample sits at the start timestamp st with value 0.
+	c.stZeroSamples[l.String()] = &MetricSample{
+		Timestamp: st,
+		Value:     0,
+		Labels:    l,
+	}
+	return ref, nil
 }
+
+func (c *collectingAppender) AppendHistogramSTZeroSample(ref storage.SeriesRef, l labels.Labels, t, st int64, h *histogram.Histogram, fh *histogram.FloatHistogram) (storage.SeriesRef, error) {
+	c.mut.Lock()
+	defer c.mut.Unlock()
+	c.stZeroHistograms[l.String()] = &HistogramSample{
+		Timestamp:      st,
+		Labels:         l,
+		Histogram:      h,
+		FloatHistogram: fh,
+	}
+	return ref, nil
+}
+
+func (c *collectingAppender) SetOptions(_ *storage.AppendOptions) {}
 
 type ConstantAppendable struct {
-	Inner CollectingAppender
+	Inner storage.Appender
 }
 
 func (c ConstantAppendable) Appender(_ context.Context) storage.Appender {

@@ -5,6 +5,8 @@ aliases:
 description: Learn about loki.write
 labels:
   stage: general-availability
+  products:
+    - oss
 title: loki.write
 ---
 
@@ -30,12 +32,14 @@ You can use the following arguments with `loki.write`:
 
 | Name              | Type          | Description                                  | Default        | Required |
 | ----------------- | ------------- | -------------------------------------------- | -------------- | -------- |
-| `external_labels` | `map(string)` | Labels to add to logs sent over the network. |                | no       |
+| `external_labels` | `map(string)` | Labels to add to logs sent over the network. | `{}`           | no       |
 | `max_streams`     | `int`         | Maximum number of active streams.            | `0` (no limit) | no       |
 
 ## Blocks
 
 You can use the following blocks with `loki.write`:
+
+{{< docs/alloy-config >}}
 
 | Block                                              | Description                                                | Required |
 | -------------------------------------------------- | ---------------------------------------------------------- | -------- |
@@ -44,12 +48,9 @@ You can use the following blocks with `loki.write`:
 | `endpoint` > [`basic_auth`][basic_auth]            | Configure `basic_auth` for authenticating to the endpoint. | no       |
 | `endpoint` > [`oauth2`][oauth2]                    | Configure OAuth 2.0 for authenticating to the endpoint.    | no       |
 | `endpoint` > `oauth2` > [`tls_config`][tls_config] | Configure TLS settings for connecting to the endpoint.     | no       |
-| `endpoint` > [`queue_config`][queue_config]        | When WAL is enabled, configures the queue client.          | no       |
+| `endpoint` > [`queue_config`][queue_config]        | Configure the queue used for the endpoint.                     | no       |
 | `endpoint` > [`tls_config`][tls_config]            | Configure TLS settings for connecting to the endpoint.     | no       |
 | [`wal`][wal]                                       | Write-ahead log configuration.                             | no       |
-
-The > symbol indicates deeper levels of nesting.
-For example, `endpoint` > `basic_auth` refers to a `basic_auth` block defined inside an `endpoint` block.
 
 [authorization]: #authorization
 [basic_auth]: #basic_auth
@@ -58,6 +59,8 @@ For example, `endpoint` > `basic_auth` refers to a `basic_auth` block defined in
 [queue_config]: #queue_config
 [tls_config]: #tls_config
 [wal]: #wal
+
+{{< /docs/alloy-config >}}
 
 ### `endpoint`
 
@@ -75,10 +78,10 @@ The following arguments are supported:
 | `bearer_token`           | `secret`            | Bearer token to authenticate with.                                                               |           | no       |
 | `enable_http2`           | `bool`              | Whether HTTP2 is supported for requests.                                                         | `true`    | no       |
 | `follow_redirects`       | `bool`              | Whether redirects returned by the server should be followed.                                     | `true`    | no       |
-| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |                      | no       |
+| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |           | no       |
 | `headers`                | `map(string)`       | Extra headers to deliver with the request.                                                       |           | no       |
 | `max_backoff_period`     | `duration`          | Maximum backoff time between retries.                                                            | `"5m"`    | no       |
-| `max_backoff_retries`    | `int`               | Maximum number of retries.                                                                       | 10        | no       |
+| `max_backoff_retries`    | `int`               | Maximum number of retries.                                                                       | `10`      | no       |
 | `min_backoff_period`     | `duration`          | Initial backoff time between retries.                                                            | `"500ms"` | no       |
 | `name`                   | `string`            | Optional name to identify this endpoint with.                                                    |           | no       |
 | `no_proxy`               | `string`            | Comma-separated list of IP addresses, CIDR notations, and domain names to exclude from proxying. |           | no       |
@@ -91,19 +94,20 @@ The following arguments are supported:
 
  At most, one of the following can be provided:
 
-* [`authorization`][authorization] block
-* [`basic_auth`][basic_auth] block
-* [`bearer_token_file`][endpoint] argument
-* [`bearer_token`][endpoint] argument
-* [`oauth2`][oauth2] block
+* [`authorization`](#authorization) block
+* [`basic_auth`](#basic_auth) block
+* [`bearer_token_file`](#endpoint) argument
+* [`bearer_token`](#endpoint) argument
+* [`oauth2`](#oauth2) block
 
 {{< docs/shared lookup="reference/components/http-client-proxy-config-description.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
 If no `tenant_id` is provided, the component assumes that the Loki instance at `endpoint` is running in single-tenant mode and no X-Scope-OrgID header is sent.
 
 When multiple `endpoint` blocks are provided, the `loki.write` component creates a client for each.
-Received log entries are fanned-out to these clients in succession.
-That means that if one client is bottlenecked, it may impact the rest.
+Received log entries are fanned-out to these endpoints in succession. That means that if one endpoint is bottlenecked, it may impact the rest.
+
+Each endpoint has a _queue_ of batches to be sent. The `queue_config` block can be used to customize the behavior of this queue.
 
 Endpoints can be named for easier identification in debug metrics by using the `name` argument. If the `name` argument isn't provided, a name is generated based on a hash of the endpoint settings.
 
@@ -125,21 +129,24 @@ When `retry_on_http_429` is enabled, the retry mechanism is governed by the back
 
 ### `queue_config`
 
-> **EXPERIMENTAL**: This is an [experimental][] feature.
-> Experimental features are subject to frequent breaking changes, and may be removed with no equivalent replacement.
-> The `stability.level` flag must be set to `experimental` to use the feature.
+{{< docs/shared lookup="stability/experimental_feature.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
-[experimental]: https://grafana.com/docs/release-life-cycle/
-
-The optional `queue_config` block configures, when WAL is enabled, how the underlying client queues batches of logs sent to Loki.
-Refer to [Write-Ahead block](#wal) for more information.
+The optional `queue_config` block configures how the endpoint queues batches of logs sent to Loki.
 
 The following arguments are supported:
 
-| Name            | Type       | Description                                                                                                                                                                   | Default | Required |
-| --------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | -------- |
-| `capacity`      | `string`   | Controls the size of the underlying send queue buffer. This setting should be considered a worst-case scenario of memory consumption, in which all enqueued batches are full. | `10MiB` | no       |
-| `drain_timeout` | `duration` | Configures the maximum time the client can take to drain the send queue upon shutdown. During that time, it enqueues pending batches and drains the send queue sending each.  | `"1m"`  | no       |
+| Name                 | Type       | Description                                                                                                                                                                   | Default | Required |
+| -------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | -------- |
+| `block_on_overflow`  | `bool`     | If `true`, block until there is space in the queue; if `false`, drop entries when queue is full.                                                                              | `true`  | no       |
+| `capacity`           | `string`   | Controls the size of the underlying send queue buffer. This setting should be considered a worst-case scenario of memory consumption, in which all enqueued batches are full. | `10MiB` | no       |
+| `drain_timeout`      | `duration` | Configures the maximum time the client can take to drain the send queue upon shutdown. During that time, it enqueues pending batches and drains the send queue sending each.  | `"1m"`  | no       |
+| `min_shards`         | `number`   | Minimum number of concurrent shards sending samples to the endpoint.                                                                                                          | `1`     | no       |
+
+Each endpoint is divided into a number of concurrent _shards_ which are responsible for sending a fraction of batches. The number of shards is controlled with `min_shards` argument.
+Each shard has a queue of batches it keeps in memory, controlled with the `capacity` argument.
+
+Queue size is calculated using `batch_size` and `capacity` for each shard. So if `batch_size` is 1MiB and `capacity` is 10MiB each shard would be able to queue up 10 batches.
+The maximum amount of memory required for all configured shards can be calculated using `capacity` * `min_shards`. 
 
 ### `tls_config`
 
@@ -147,9 +154,7 @@ The following arguments are supported:
 
 ### `wal`
 
-> **EXPERIMENTAL**: This is an [experimental][] feature.
-> Experimental features are subject to frequent breaking changes, and may be removed with no equivalent replacement.
-> The `stability.level` flag must be set to `experimental` to use the feature.
+{{< docs/shared lookup="stability/experimental_feature.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
 The optional `wal` block configures the Write-Ahead Log (WAL) used in the Loki remote-write client.
 To enable the WAL, you must include the `wal` block in your configuration.
@@ -167,7 +172,7 @@ The following arguments are supported:
 | Name                 | Type       | Description                                                                                                    | Default   | Required |
 | -------------------- | ---------- | -------------------------------------------------------------------------------------------------------------- | --------- | -------- |
 | `drain_timeout`      | `duration` | Maximum time the WAL drain procedure can take, before being forcefully stopped.                                | `"30s"`   | no       |
-| `enabled`            | `bool`     | Whether to enable the WAL.                                                                                     | false     | no       |
+| `enabled`            | `bool`     | Whether to enable the WAL.                                                                                     | `false`   | no       |
 | `max_read_frequency` | `duration` | Maximum backoff time in the backup read mechanism.                                                             | `"1s"`    | no       |
 | `max_segment_age`    | `duration` | Maximum time a WAL segment should be allowed to live. Segments older than this setting are eventually deleted. | `"1h"`    | no       |
 | `min_read_frequency` | `duration` | Minimum backoff time in the backup read mechanism.                                                             | `"250ms"` | no       |
@@ -195,11 +200,11 @@ The following fields are exported and can be referenced by other components:
 * `loki_write_batch_retries_total` (counter): Number of times batches have had to be retried.
 * `loki_write_dropped_bytes_total` (counter): Number of bytes dropped because failed to be sent to the ingester after all retries.
 * `loki_write_dropped_entries_total` (counter): Number of log entries dropped because they failed to be sent to the ingester after all retries.
-* `loki_write_encoded_bytes_total` (counter): Number of bytes encoded and ready to send.
-* `loki_write_request_duration_seconds` (histogram): Duration of sent requests.
 * `loki_write_sent_bytes_total` (counter): Number of bytes sent.
 * `loki_write_sent_entries_total` (counter): Number of log entries sent to the ingester.
-* `loki_write_stream_lag_seconds` (gauge): Difference between current time and last batch timestamp for successful sends.
+* `loki_write_request_size_bytes` (histogram): Number of bytes for encoded requests.
+* `loki_write_request_duration_seconds` (histogram): Duration of sent requests.
+* `loki_write_entry_propagation_latency_seconds` (histogram): Time in seconds from entry creation until it's either successfully sent or dropped.
 
 ## Examples
 

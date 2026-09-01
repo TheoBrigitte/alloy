@@ -5,30 +5,30 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"sync"
 	"time"
 
-	"github.com/go-kit/log"
-	"github.com/grafana/alloy/internal/component/pyroscope"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
-	"github.com/grafana/alloy/internal/useragent"
 	commonconfig "github.com/prometheus/common/config"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
 	"github.com/prometheus/prometheus/util/pool"
 	"golang.org/x/net/context/ctxhttp"
+
+	"github.com/grafana/alloy/internal/component/pyroscope"
+	"github.com/grafana/alloy/internal/useragent"
 )
 
 var (
-	payloadBuffers  = pool.New(1e3, 1e6, 3, func(sz int) interface{} { return make([]byte, 0, sz) })
+	payloadBuffers  = pool.New(1e3, 1e6, 3, func(sz int) any { return make([]byte, 0, sz) })
 	userAgentHeader = useragent.Get()
 )
 
 type scrapePool struct {
 	config Arguments
 
-	logger       log.Logger
+	logger       *slog.Logger
 	scrapeClient *http.Client
 	appendable   pyroscope.Appendable
 
@@ -36,7 +36,7 @@ type scrapePool struct {
 	activeTargets map[uint64]*scrapeLoop
 }
 
-func newScrapePool(hco []commonconfig.HTTPClientOption, cfg Arguments, appendable pyroscope.Appendable, logger log.Logger) (*scrapePool, error) {
+func newScrapePool(hco []commonconfig.HTTPClientOption, cfg Arguments, appendable pyroscope.Appendable, logger *slog.Logger) (*scrapePool, error) {
 	scrapeClient, err := commonconfig.NewClientFromConfig(*cfg.HTTPClientConfig.Convert(), cfg.JobName, hco...)
 	if err != nil {
 		return nil, err
@@ -55,12 +55,12 @@ func (tg *scrapePool) sync(groups []*targetgroup.Group) {
 	tg.mtx.Lock()
 	defer tg.mtx.Unlock()
 	allTargets := tg.config.ProfilingConfig.AllTargets()
-	level.Info(tg.logger).Log("msg", "syncing target groups", "job", tg.config.JobName)
+	tg.logger.Info("syncing target groups", "job", tg.config.JobName)
 	var actives []*Target
 	for _, group := range groups {
 		targets, err := targetsFromGroup(group, tg.config, allTargets)
 		if err != nil {
-			level.Error(tg.logger).Log("msg", "creating targets failed", "err", err)
+			tg.logger.Error("creating targets failed", "err", err)
 			continue
 		}
 		if actives == nil {
@@ -153,14 +153,14 @@ type scrapeLoop struct {
 	appender     pyroscope.Appender
 
 	req               *http.Request
-	logger            log.Logger
+	logger            *slog.Logger
 	interval, timeout time.Duration
 	graceShut         chan struct{}
 	once              sync.Once
 	wg                sync.WaitGroup
 }
 
-func newScrapeLoop(t *Target, scrapeClient *http.Client, appendable pyroscope.Appendable, interval, timeout time.Duration, logger log.Logger) *scrapeLoop {
+func newScrapeLoop(t *Target, scrapeClient *http.Client, appendable pyroscope.Appendable, interval, timeout time.Duration, logger *slog.Logger) *scrapeLoop {
 	// if the URL parameter have a seconds parameter, then the collection will
 	// take at least scrape_duration - 1 second, as the HTTP request will block
 	// until the profile is collected.
@@ -168,11 +168,15 @@ func newScrapeLoop(t *Target, scrapeClient *http.Client, appendable pyroscope.Ap
 		timeout += interval - time.Second
 	}
 
+	appender := appendable.Appender()
+	if !t.godeltaprof {
+		appender = NewDeltaAppender(appender, t.allLabels)
+	}
 	return &scrapeLoop{
 		Target:       t,
 		logger:       logger,
 		scrapeClient: scrapeClient,
-		appender:     NewDeltaAppender(appendable.Appender(), t.allLabels),
+		appender:     appender,
 		interval:     interval,
 		timeout:      timeout,
 	}
@@ -215,14 +219,10 @@ func (t *scrapeLoop) scrape() {
 	)
 	defer cancel()
 
-	for _, l := range t.allLabels {
-		if l.Name == ProfileName {
-			profileType = l.Value
-			break
-		}
-	}
+	profileType = t.allLabels.Get(ProfileName)
+
 	if err := t.fetchProfile(scrapeCtx, profileType, buf); err != nil {
-		level.Error(t.logger).Log("msg", "fetch profile failed", "target", t, "err", err)
+		t.logger.Error("fetch profile failed", "target", t, "err", err)
 		t.updateTargetStatus(start, err)
 		return
 	}
@@ -231,8 +231,9 @@ func (t *scrapeLoop) scrape() {
 	if len(b) > 0 {
 		t.lastScrapeSize = len(b)
 	}
-	if err := t.appender.Append(context.Background(), t.allLabels, []*pyroscope.RawSample{{RawProfile: b}}); err != nil {
-		level.Error(t.logger).Log("msg", "push failed", "target", t, "err", err)
+	lbs := pyroscope.LabelsWithScope(t.allLabels, pyroscope.ScopeNameScrape)
+	if err := t.appender.Append(context.Background(), lbs, []*pyroscope.RawSample{{RawProfile: b}}); err != nil {
+		t.logger.Error("push failed", "target", t, "err", err)
 		t.updateTargetStatus(start, err)
 		return
 	}
@@ -260,11 +261,10 @@ func (t *scrapeLoop) fetchProfile(ctx context.Context, profileType string, buf i
 			return err
 		}
 		req.Header.Set("User-Agent", userAgentHeader)
-
 		t.req = req
 	}
 
-	level.Debug(t.logger).Log("msg", "scraping profile", "target", t, "url", t.req.URL.String())
+	t.logger.Debug("scraping profile", "target", t, "url", t.req.URL.String())
 	resp, err := ctxhttp.Do(ctx, t.scrapeClient, t.req)
 	if err != nil {
 		return err
@@ -284,8 +284,13 @@ func (t *scrapeLoop) fetchProfile(ctx context.Context, profileType string, buf i
 	}
 
 	if len(b) == 0 {
-		return fmt.Errorf("empty %s profile from %s", profileType, t.req.URL.String())
+		return fmt.Errorf("empty %s profile", profileType)
 	}
+
+	if err := validateProfileData(b, resp.Header.Get("Content-Type")); err != nil {
+		return fmt.Errorf("invalid profile data: %w", err)
+	}
+
 	return nil
 }
 

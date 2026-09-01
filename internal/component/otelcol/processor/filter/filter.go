@@ -1,12 +1,12 @@
 package filter
 
 import (
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/grafana/alloy/internal/component"
 	"github.com/grafana/alloy/internal/component/otelcol"
 	otelcolCfg "github.com/grafana/alloy/internal/component/otelcol/config"
 	"github.com/grafana/alloy/internal/component/otelcol/processor"
 	"github.com/grafana/alloy/internal/featuregate"
-	"github.com/mitchellh/mapstructure"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor"
 	otelcomponent "go.opentelemetry.io/collector/component"
@@ -30,9 +30,15 @@ func init() {
 type Arguments struct {
 	// ErrorMode determines how the processor reacts to errors that occur while processing a statement.
 	ErrorMode ottl.ErrorMode `alloy:"error_mode,attr,optional"`
-	Traces    TraceConfig    `alloy:"traces,block,optional"`
-	Metrics   MetricConfig   `alloy:"metrics,block,optional"`
-	Logs      LogConfig      `alloy:"logs,block,optional"`
+
+	// These are deprecated in favor of Condition variants below.
+	Traces  TraceConfig  `alloy:"traces,block,optional"`
+	Metrics MetricConfig `alloy:"metrics,block,optional"`
+	Logs    LogConfig    `alloy:"logs,block,optional"`
+
+	TraceConditions  ContextConditionsSlice `alloy:"trace_conditions,block,optional"`
+	MetricConditions ContextConditionsSlice `alloy:"metric_conditions,block,optional"`
+	LogConditions    ContextConditionsSlice `alloy:"log_conditions,block,optional"`
 
 	// Output configures where to send processed data. Required.
 	Output *otelcol.ConsumerArguments `alloy:"output,block"`
@@ -47,7 +53,8 @@ var (
 
 // DefaultArguments holds default settings for Arguments.
 var DefaultArguments = Arguments{
-	ErrorMode: ottl.PropagateError,
+	// Matches the upstream default since v0.153 (the processor.filter.defaultErrorModeIgnore gate is on by default).
+	ErrorMode: ottl.IgnoreError,
 }
 
 // SetToDefault implements syntax.Defaulter.
@@ -73,7 +80,7 @@ func (args Arguments) Convert() (otelcomponent.Config, error) {
 // convertImpl is a helper function which returns the real type of the config,
 // instead of the otelcomponent.Config interface.
 func (args Arguments) convertImpl() (*filterprocessor.Config, error) {
-	input := make(map[string]interface{})
+	input := make(map[string]any)
 
 	input["error_mode"] = args.ErrorMode
 
@@ -89,14 +96,26 @@ func (args Arguments) convertImpl() (*filterprocessor.Config, error) {
 		input["logs"] = args.Logs.convert()
 	}
 
-	var result filterprocessor.Config
-	err := mapstructure.Decode(input, &result)
+	if len(args.TraceConditions) > 0 {
+		input["trace_conditions"] = args.TraceConditions.convert()
+	}
+
+	if len(args.MetricConditions) > 0 {
+		input["metric_conditions"] = args.MetricConditions.convert()
+	}
+
+	if len(args.LogConditions) > 0 {
+		input["log_conditions"] = args.LogConditions.convert()
+	}
+
+	result := filterprocessor.NewFactory().CreateDefaultConfig().(*filterprocessor.Config)
+	err := mapstructure.Decode(input, result)
 
 	if err != nil {
 		return nil, err
 	}
 
-	return &result, nil
+	return result, nil
 }
 
 // Extensions implements processor.Arguments.

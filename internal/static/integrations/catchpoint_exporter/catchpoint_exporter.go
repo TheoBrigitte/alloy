@@ -3,13 +3,11 @@ package catchpoint_exporter
 import (
 	"log/slog"
 
-	"github.com/go-kit/log"
-	"github.com/grafana/alloy/internal/runtime/logging"
+	collector "github.com/grafana/catchpoint-prometheus-exporter/collector"
+
 	"github.com/grafana/alloy/internal/static/integrations"
 	integrations_v2 "github.com/grafana/alloy/internal/static/integrations/v2"
 	"github.com/grafana/alloy/internal/static/integrations/v2/metricsutils"
-
-	collector "github.com/grafana/catchpoint-prometheus-exporter/collector"
 )
 
 // DefaultConfig is the default config for the catchpoint integration
@@ -34,13 +32,12 @@ func (c *Config) exporterConfig() *collector.Config {
 	}
 }
 
-// Identifier returns a string that identifies the integration.
-func (c *Config) InstanceKey(agentKey string) (string, error) {
+func (c *Config) InstanceKey(_ string) (string, error) {
 	return c.Port, nil
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler for Config
-func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (c *Config) UnmarshalYAML(unmarshal func(any) error) error {
 	*c = DefaultConfig
 
 	type plain Config
@@ -58,10 +55,10 @@ func init() {
 }
 
 // NewIntegration creates a new integration from the config.
-func (c *Config) NewIntegration(l log.Logger) (integrations.Integration, error) {
+func (c *Config) NewIntegration(l *slog.Logger) (integrations.Integration, error) {
 	exporterConfig := c.exporterConfig()
 
-	col := collector.NewCollector(slog.New(logging.NewSlogGoKitHandler(l)), exporterConfig)
+	col := collector.NewCollector(l, exporterConfig)
 	return integrations.NewCollectorIntegration(
 		c.Name(),
 		integrations.WithCollectors(col),

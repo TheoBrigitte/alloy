@@ -5,6 +5,8 @@ aliases:
 description: Learn about prometheus.operator.probes
 labels:
   stage: general-availability
+  products:
+    - oss
 title: prometheus.operator.probes
 ---
 
@@ -38,12 +40,14 @@ You can use the following arguments with `prometheus.operator.probes`:
 | Name                    | Type                    | Description                                                                                      | Default | Required |
 | ----------------------- | ----------------------- | ------------------------------------------------------------------------------------------------ | ------- | -------- |
 | `forward_to`            | `list(MetricsReceiver)` | List of receivers to send scraped metrics to.                                                    |         | yes      |
-| `informer_sync_timeout` | `duration`              | Timeout for initial sync of Probe resources.                                                     | `1m`    | no       |
+| `informer_sync_timeout` | `duration`              | Timeout for initial sync of Probe resources.                                                     | `"1m"`  | no       |
 | `namespaces`            | `list(string)`          | List of namespaces to search for Probe resources. If not specified, all namespaces are searched. |         | no       |
 
 ## Blocks
 
 You can use the following blocks with `prometheus.operator.probes`:
+
+{{< docs/alloy-config >}}
 
 | Name                                                | Description                                                                                 | Required |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------- | -------- |
@@ -59,9 +63,6 @@ You can use the following blocks with `prometheus.operator.probes`:
 | [`selector`][selector]                              | Label selector for which Probes to discover.                                                | no       |
 | `selector` > [`match_expression`][match_expression] | Label selector expression for which Probes to discover.                                     | no       |
 
-The > symbol indicates deeper levels of nesting.
-For example, `client` > `basic_auth` refers to a `basic_auth` block defined inside a `client` block.
-
 [client]: #client
 [basic_auth]: #basic_auth
 [authorization]: #authorization
@@ -72,6 +73,8 @@ For example, `client` > `basic_auth` refers to a `basic_auth` block defined insi
 [rule]: #rule
 [scrape]: #scrape
 [clustering]: #clustering
+
+{{< /docs/alloy-config >}}
 
 ### `client`
 
@@ -87,7 +90,7 @@ The following arguments are supported:
 | `bearer_token`           | `secret`            | Bearer token to authenticate with.                                                               |         | no       |
 | `enable_http2`           | `bool`              | Whether HTTP2 is supported for requests.                                                         | `true`  | no       |
 | `follow_redirects`       | `bool`              | Whether redirects returned by the server should be followed.                                     | `true`  | no       |
-| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |                      | no       |
+| `http_headers`           | `map(list(secret))` | Custom HTTP headers to be sent along with each request. The map key is the header name.          |         | no       |
 | `kubeconfig_file`        | `string`            | Path of the `kubeconfig` file to use for connecting to Kubernetes.                               |         | no       |
 | `no_proxy`               | `string`            | Comma-separated list of IP addresses, CIDR notations, and domain names to exclude from proxying. |         | no       |
 | `proxy_connect_header`   | `map(list(secret))` | Specifies headers to send to proxies during CONNECT requests.                                    |         | no       |
@@ -96,11 +99,11 @@ The following arguments are supported:
 
  At most, one of the following can be provided:
 
-* [`authorization`][authorization] block
-* [`basic_auth`][basic_auth] block
-* [`bearer_token_file`][client] argument
-* [`bearer_token`][client] argument
-* [`oauth2`][oauth2] block
+* [`authorization`](#authorization) block
+* [`basic_auth`](#basic_auth) block
+* [`bearer_token_file`](#client) argument
+* [`bearer_token`](#client) argument
+* [`oauth2`](#oauth2) block
 
 {{< docs/shared lookup="reference/components/http-client-proxy-config-description.md" source="alloy" version="<ALLOY_VERSION>" >}}
 
@@ -250,6 +253,27 @@ prometheus.operator.probes "probes" {
     }
 }
 ```
+
+### Probe with {{< param "PRODUCT_NAME" >}} as the blackbox prober
+
+`prometheus.operator.probes` scrapes Probe targets by calling a prober (typically blackbox exporter).
+{{< param "PRODUCT_NAME" >}} can act as that prober when you also configure [`prometheus.exporter.blackbox`][blackbox].
+Configure {{< param "PRODUCT_NAME" >}} as your prober to eliminate the need for a separate blackbox-exporter deployment.
+
+Set `spec.prober.url` to the {{< param "PRODUCT_NAME" >}} HTTP listen address.
+Set `spec.prober.path` to the prober endpoint path.
+For blackbox-style probers, the `/probe` endpoint returns probe metrics.
+The `/metrics` exposes exporter operational metrics.
+
+For `prometheus.exporter.blackbox`, use the component HTTP API path:
+
+```text
+/api/v0/component/prometheus.exporter.blackbox.<LABEL>/probe
+```
+
+The `module` field on the Probe must match a module name defined in the `prometheus.exporter.blackbox` `config` or `config_file`.
+
+[blackbox]: ../prometheus.exporter.blackbox/
 
 <!-- START GENERATED COMPATIBLE COMPONENTS -->
 

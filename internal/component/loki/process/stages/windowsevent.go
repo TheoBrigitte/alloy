@@ -2,10 +2,9 @@ package stages
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 
-	"github.com/go-kit/log"
-	"github.com/grafana/alloy/internal/runtime/logging/level"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/util/strutil"
 )
@@ -22,6 +21,8 @@ type WindowsEventConfig struct {
 }
 
 func (e *WindowsEventConfig) Validate() error {
+	// TODO: add support for different validation schemes.
+	//nolint:staticcheck
 	if !model.LabelName(e.Source).IsValid() {
 		return fmt.Errorf(ErrInvalidLabelName, e.Source)
 	}
@@ -34,17 +35,17 @@ func (e *WindowsEventConfig) SetToDefault() {
 
 type WindowsEventStage struct {
 	cfg    *WindowsEventConfig
-	logger log.Logger
+	logger *slog.Logger
 
 	keyReplacer   *strings.Replacer
 	valueReplacer *strings.Replacer
 }
 
 // Create a windowsevent stage, including validating any supplied configuration
-func newWindowsEventStage(logger log.Logger, cfg *WindowsEventConfig) Stage {
+func newWindowsEventStage(logger *slog.Logger, cfg *WindowsEventConfig) Stage {
 	return &WindowsEventStage{
 		cfg:           cfg,
-		logger:        log.With(logger, "component", "stage", "type", "windowsevent"),
+		logger:        logger.With("stage", "windowsevent"),
 		keyReplacer:   strings.NewReplacer("\t", "", "\r", "", "\n", "", " ", ""),
 		valueReplacer: strings.NewReplacer("\t", "", "\r", "", "\n", ""),
 	}
@@ -68,17 +69,17 @@ func (w *WindowsEventStage) Run(in chan Entry) chan Entry {
 
 // Process a windows event message from extracted with the specified key, adding additional
 // entries into the extracted map.
-func (w *WindowsEventStage) processEntry(extracted map[string]interface{}, key string) error {
+func (w *WindowsEventStage) processEntry(extracted map[string]any, key string) error {
 	value, ok := extracted[key]
 	if !ok {
-		if Debug {
-			level.Debug(w.logger).Log("msg", "source not in the extracted values", "source", key)
+		if debugEnabled(w.logger) {
+			w.logger.Debug("source not in the extracted values", "source", key)
 		}
 		return nil
 	}
 	s, err := getString(value)
 	if err != nil {
-		level.Warn(w.logger).Log("msg", "invalid label value parsed", "value", value)
+		w.logger.Warn("invalid label value parsed", "value", value)
 		return err
 	}
 
@@ -156,15 +157,16 @@ func (w *WindowsEventStage) processEntry(extracted map[string]interface{}, key s
 			extracted[sanitizedKey] = sanitizedValue
 		}
 	}
-	if Debug {
-		level.Debug(w.logger).Log("msg", "extracted data debug in windowsevent stage",
-			"extracted data", fmt.Sprintf("%v", extracted))
+	if debugEnabled(w.logger) {
+		w.logger.Debug("extracted data debug in windowsevent stage", "extracted_data", extracted)
 	}
 	return nil
 }
 
-func (w *WindowsEventStage) sanitizeKey(ekey string, extracted map[string]interface{}) (string, error) {
+func (w *WindowsEventStage) sanitizeKey(ekey string, extracted map[string]any) (string, error) {
 	k := w.keyReplacer.Replace(ekey)
+	// TODO: add support for different validation schemes.
+	//nolint:staticcheck
 	if !model.LabelName(k).IsValid() {
 		if w.cfg.DropInvalidLabels {
 			return "", fmt.Errorf("invalid label parsed from message, key: %s", k)
@@ -172,8 +174,7 @@ func (w *WindowsEventStage) sanitizeKey(ekey string, extracted map[string]interf
 		k = strutil.SanitizeFullLabelName(k)
 	}
 	if _, ok := extracted[k]; ok && !w.cfg.OverwriteExisting {
-		level.Info(w.logger).Log("msg", "extracted key that already existed, appending _extracted to key",
-			"key", k)
+		w.logger.Info("extracted key that already existed, appending _extracted to key", "key", k)
 		k += "_extracted"
 	}
 	return k, nil
@@ -188,13 +189,9 @@ func (w *WindowsEventStage) sanitizeValue(evalue string) (string, error) {
 }
 
 func (w *WindowsEventStage) logParseErr(err error) {
-	if Debug {
-		level.Debug(w.logger).Log("msg", err.Error())
+	if debugEnabled(w.logger) {
+		w.logger.Debug(err.Error())
 	}
-}
-
-func (w *WindowsEventStage) Name() string {
-	return StageTypeWindowsEvent
 }
 
 // Cleanup implements Stage.
